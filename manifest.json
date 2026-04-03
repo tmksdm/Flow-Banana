@@ -1,14 +1,13 @@
 {
   "manifest_version": 3,
   "name": "FlowBatch — Автоматизация Google Flow",
-  "version": "0.4.0",
-  "description": "Пакетная генерация видео и изображений в Google Flow (Nano Banana Pro, Veo 3.1) с авто-скачиванием в 4K",
+  "version": "0.4.1",
+  "description": "Пакетная генерация видео и изображений в Google Flow с авто-скачиванием в 4K",
 
   "permissions": [
     "activeTab",
     "storage",
     "downloads",
-    "scripting",
     "sidePanel"
   ],
 
@@ -48,7 +47,7 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     },
-    "default_title": "FlowBatch — открыть/закрыть панель"
+    "default_title": "FlowBatch — открыть панель"
   },
 
   "side_panel": {

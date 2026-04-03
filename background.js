@@ -1,21 +1,7 @@
 /**
- * FlowBatch — Background Service Worker v0.4
- * Side Panel только для Flow, toggle по иконке расширения.
+ * FlowBatch — Background Service Worker v0.4.1
+ * Простая надёжная логика: открытие Side Panel по клику на иконку.
  */
-
-// URL-паттерны Flow
-const FLOW_PATTERNS = [
-  'labs.google/fx/tools/flow',
-  'flow.google'
-];
-
-function isFlowUrl(url) {
-  if (!url) return false;
-  return FLOW_PATTERNS.some(p => url.includes(p));
-}
-
-// ─── Состояние Side Panel (open/closed) по табам ────────
-const panelOpenTabs = new Set();
 
 // ─── При установке ──────────────────────────────────────
 chrome.runtime.onInstalled.addListener((details) => {
@@ -38,73 +24,12 @@ chrome.runtime.onInstalled.addListener((details) => {
   }
 });
 
-// ─── Управление доступностью Side Panel по URL ──────────
-
-/**
- * Включаем / выключаем Side Panel в зависимости от URL текущего таба
- */
-async function updateSidePanelForTab(tabId, url) {
-  try {
-    const flow = isFlowUrl(url);
-    await chrome.sidePanel.setOptions({
-      tabId,
-      enabled: flow
-    });
-    // Если таб не Flow и панель была открыта — она закроется автоматически
-    if (!flow) {
-      panelOpenTabs.delete(tabId);
-    }
-  } catch (e) {
-    // Игнорируем ошибки для невалидных табов
-  }
-}
-
-// При переключении таба
-chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    await updateSidePanelForTab(tabId, tab.url);
-  } catch (_) {}
-});
-
-// При обновлении URL таба
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.url || changeInfo.status === 'complete') {
-    await updateSidePanelForTab(tabId, tab.url);
-  }
-});
-
-// При закрытии таба — чистим
-chrome.tabs.onRemoved.addListener((tabId) => {
-  panelOpenTabs.delete(tabId);
-});
-
-// ─── Клик по иконке → toggle Side Panel ─────────────────
+// ─── Клик по иконке → открыть Side Panel ────────────────
 chrome.action.onClicked.addListener(async (tab) => {
-  if (!isFlowUrl(tab.url)) {
-    // Не Flow — ничего не делаем (можно показать уведомление)
-    return;
-  }
-
-  if (panelOpenTabs.has(tab.id)) {
-    // Панель открыта → закрываем
-    // Трюк: disable → панель закрывается, потом сразу enable обратно
-    await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: false });
-    panelOpenTabs.delete(tab.id);
-    // Re-enable через 300мс, чтобы можно было открыть снова
-    setTimeout(async () => {
-      try {
-        const t = await chrome.tabs.get(tab.id);
-        if (isFlowUrl(t.url)) {
-          await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: true });
-        }
-      } catch (_) {}
-    }, 300);
-  } else {
-    // Панель закрыта → открываем
-    await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: true });
-    await chrome.sidePanel.open({ tabId: tab.id });
-    panelOpenTabs.add(tab.id);
+  try {
+    await chrome.sidePanel.open({ windowId: tab.windowId });
+  } catch (e) {
+    console.error('[FlowBatch] Ошибка открытия Side Panel:', e);
   }
 });
 
@@ -143,22 +68,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         sendResponse({ tab: tabs[0] || null });
       });
-      return true;
-
-    case 'PANEL_OPENED':
-      // Side panel уведомляет, что открыт
-      if (sender.tab?.id) panelOpenTabs.add(sender.tab.id);
-      else {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs[0]) panelOpenTabs.add(tabs[0].id);
-        });
-      }
-      sendResponse({ ok: true });
-      return true;
-
-    case 'PANEL_CLOSED':
-      if (sender.tab?.id) panelOpenTabs.delete(sender.tab.id);
-      sendResponse({ ok: true });
       return true;
   }
 });
