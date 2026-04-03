@@ -1,7 +1,6 @@
 /**
- * FlowBatch — Side Panel Script
+ * FlowBatch — Side Panel Script v0.3
  * Управление UI расширения, связь с content script.
- * Side Panel НЕ закрывается при кликах на страницу — идеально для мониторинга очереди.
  */
 
 (() => {
@@ -53,9 +52,6 @@
     el.logCounter.textContent = `${logCount} записей`;
   }
 
-  /**
-   * Отправка сообщения в content script активной вкладки
-   */
   function sendToContent(message) {
     return new Promise((resolve, reject) => {
       if (!activeTabId) {
@@ -78,9 +74,6 @@
     });
   }
 
-  /**
-   * Парсинг промптов: разделяем по двойным переносам строк
-   */
   function parsePrompts(text) {
     return text
       .split(/\n\s*\n/)
@@ -187,6 +180,7 @@
 
   // ─── Табы ──────────────────────────────────────────────
 
+
   $$('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
 
@@ -280,6 +274,9 @@
   el.btnSaveSettings.addEventListener('click', async () => {
     const settings = getSettingsFromUI();
     await sendToBackground({ type: 'SAVE_SETTINGS', settings });
+    try {
+      await sendToContent({ type: 'SET_SETTINGS', settings });
+    } catch (e) { /* content script может быть недоступен */ }
     log('Настройки сохранены', 'success');
   });
 
@@ -291,15 +288,24 @@
     try {
       const result = await sendToContent({ type: 'DISCOVER_DOM' });
 
-      let output = '═══ ДИАГНОСТИКА DOM ═══\n\n';
+      let output = '═══ ДИАГНОСТИКА DOM v0.3 ═══\n\n';
 
       // Базовые селекторы
       output += '── Основные элементы ──\n';
       output += `Поле промпта:     ${result.promptInput ? '✅ Найдено' : '❌ Не найдено'}\n`;
-      output += `Кнопка Generate:  ${result.generateButton ? '✅ Найдено' : '❌ Не найдено'}\n`;
-      output += `Селектор модели:  ${result.modelSelector ? '✅ Найдено' : '❌ Не найдено'}\n`;
+      output += `Кнопка Create:    ${result.generateButton ? '✅ Найдено' : '❌ Не найдено'}\n`;
+      output += `Кнопка ULTRA:     ${result.ultraButton ? '✅ Найдено' : '❌ Не найдено'}`;
+      if (result.ultraButton) output += ` (${result.ultraActive ? 'АКТИВНА' : 'неактивна'})`;
+      output += '\n';
+      output += `Комбо формата:    ${result.formatButton ? '✅ Найдено' : '❌ Не найдено'}`;
+      if (result.currentFormat) {
+        output += ` → ${result.currentFormat.type} ${result.currentFormat.aspect} x${result.currentFormat.count}`;
+      }
+      output += '\n';
+      output += `Add Media:        ${result.addMediaButton ? '✅ Найдено' : '❌ Не найдено'}\n`;
       output += `Индикатор загрузки: ${result.loadingIndicator ? '✅' : '⚪ Нет'}\n`;
-      output += `Генерация идёт:   ${result.isGenerating ? '🔄 Да' : '⚪ Нет'}\n\n`;
+      output += `Генерация идёт:   ${result.isGenerating ? '🔄 Да' : '⚪ Нет'}\n`;
+      output += `Модальное окно:   ${result.hasModal ? '⚠️ Есть' : '⚪ Нет'}\n\n`;
 
       // Найденные интерактивные элементы
       if (result.discovery) {
@@ -314,12 +320,31 @@
         output += `[role="textbox"]: ${d.textboxes || 0} шт.\n`;
         output += `Shadow Roots:     ${d.shadowRoots || 0} шт.\n\n`;
 
-        // Детали кнопок
+        // Детали кнопок — raw + clean
         if (d.buttonTexts && d.buttonTexts.length > 0) {
-          output += '── Тексты кнопок (первые 30) ──\n';
-          d.buttonTexts.forEach((t, i) => {
-            output += `  ${i + 1}. "${t}"\n`;
+          output += '── Кнопки (raw → clean) ──\n';
+          d.buttonTexts.forEach((btn, i) => {
+            output += `  ${i + 1}. "${btn.raw}"`;
+            if (btn.clean && btn.clean !== btn.raw) {
+              output += ` → "${btn.clean}"`;
+            }
+            if (btn.ariaLabel) {
+              output += ` [aria-label="${btn.ariaLabel}"]`;
+            }
+            output += '\n';
           });
+          output += '\n';
+        }
+
+        // Comбо формата
+        if (d.formatButton) {
+          output += '── Комбо-кнопка формата ──\n';
+          output += `  Текст: "${d.formatButton}"\n`;
+          if (d.currentFormat) {
+            output += `  Тип: ${d.currentFormat.type}\n`;
+            output += `  Aspect: ${d.currentFormat.aspect}\n`;
+            output += `  Count: x${d.currentFormat.count}\n`;
+          }
           output += '\n';
         }
 
@@ -340,28 +365,10 @@
           });
           output += '\n';
         }
-
-        // Tabs
-        if (d.tabTexts && d.tabTexts.length > 0) {
-          output += '── Табы [role="tab"] ──\n';
-          d.tabTexts.forEach((t, i) => {
-            output += `  ${i + 1}. "${t}"\n`;
-          });
-          output += '\n';
-        }
-
-        // Aria-label кнопки
-        if (d.ariaButtons && d.ariaButtons.length > 0) {
-          output += '── Кнопки с aria-label ──\n';
-          d.ariaButtons.forEach((item, i) => {
-            output += `  ${i + 1}. [aria-label="${item}"] \n`;
-          });
-          output += '\n';
-        }
       }
 
       el.diagnoseOutput.textContent = output;
-      log('Диагностика DOM выполнена', 'success');
+      log('Диагностика DOM v0.3 выполнена', 'success');
     } catch (error) {
       el.diagnoseOutput.textContent = `ОШИБКА: ${error.message}\n\nУбедитесь, что:\n1. Открыта страница Google Flow\n2. Страница полностью загружена\n3. Попробуйте обновить страницу (F5)`;
       log(`Ошибка диагностики: ${error.message}`, 'error');
@@ -380,14 +387,15 @@
   function getSettingsFromUI() {
     return {
       mode: el.modeSelect.value,
-      model: $('#setting-model').value,
-      videoModel: $('#setting-video-model').value,
-      aspectRatio: $('#setting-aspect').value,
-      downloadResolution: $('#setting-resolution').value,
-      outputCount: parseInt($('#setting-outputs').value),
-      delayBetweenPrompts: parseInt($('#setting-delay').value) * 1000,
-      maxRetries: parseInt($('#setting-retries').value),
-      autoDownload: $('#setting-autodownload').checked
+      model: $('#setting-model')?.value || 'Nano Banana Pro',
+      videoModel: $('#setting-video-model')?.value || 'Veo 3.1 Fast',
+      aspectRatio: $('#setting-aspect')?.value || '16:9',
+      downloadResolution: $('#setting-resolution')?.value || '4K',
+      outputCount: parseInt($('#setting-outputs')?.value || '2'),
+      delayBetweenPrompts: parseInt($('#setting-delay')?.value || '5') * 1000,
+      maxRetries: parseInt($('#setting-retries')?.value || '3'),
+      autoDownload: $('#setting-autodownload')?.checked ?? true,
+      useUltra: $('#setting-ultra')?.checked ?? true
     };
   }
 
@@ -396,14 +404,17 @@
     if (result?.settings) {
       const s = result.settings;
       if (s.mode) el.modeSelect.value = s.mode;
-      if (s.model) $('#setting-model').value = s.model;
-      if (s.videoModel) $('#setting-video-model').value = s.videoModel;
-      if (s.aspectRatio) $('#setting-aspect').value = s.aspectRatio;
-      if (s.downloadResolution) $('#setting-resolution').value = s.downloadResolution;
-      if (s.outputCount) $('#setting-outputs').value = s.outputCount;
-      if (s.delayBetweenPrompts) $('#setting-delay').value = s.delayBetweenPrompts / 1000;
-      if (s.maxRetries) $('#setting-retries').value = s.maxRetries;
-      if (s.autoDownload !== undefined) $('#setting-autodownload').checked = s.autoDownload;
+      const setVal = (sel, val) => { const e = $(sel); if (e && val !== undefined) e.value = val; };
+      const setChecked = (sel, val) => { const e = $(sel); if (e && val !== undefined) e.checked = val; };
+      setVal('#setting-model', s.model);
+      setVal('#setting-video-model', s.videoModel);
+      setVal('#setting-aspect', s.aspectRatio);
+      setVal('#setting-resolution', s.downloadResolution);
+      setVal('#setting-outputs', s.outputCount);
+      setVal('#setting-delay', s.delayBetweenPrompts ? s.delayBetweenPrompts / 1000 : 5);
+      setVal('#setting-retries', s.maxRetries);
+      setChecked('#setting-autodownload', s.autoDownload);
+      setChecked('#setting-ultra', s.useUltra);
     }
   }
 
@@ -455,5 +466,5 @@
   // Проверяем подключение каждые 3 секунды
   setInterval(checkConnection, 3000);
 
-  log('Side Panel загружен', 'info');
+  log('Side Panel v0.3 загружен', 'info');
 })();

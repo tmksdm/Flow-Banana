@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FlowBatch — Автоматизация Google Flow",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Пакетная генерация видео и изображений в Google Flow (Nano Banana Pro, Veo 3.1) с авто-скачиванием в 4K",
 
   "permissions": [
