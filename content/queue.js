@@ -1,6 +1,9 @@
 /**
- * FlowBatch — Управление очередью промптов v0.5
- * Добавлены подробные логи для отладки
+ * FlowBatch — Управление очередью промптов v0.6
+ * - Добавлен вызов setupFormat перед первым промптом
+ * - Улучшена проверка текста (используется FB.getCleanText)
+ * - Увеличены задержки для стабильности
+ * - Ожидание разблокировки Create с ранним выходом при ошибке
  */
 (() => {
   'use strict';
@@ -28,6 +31,26 @@
     });
   }
 
+  /**
+   * Ожидание готовности кнопки Create (не disabled, не aria-disabled)
+   * С проверкой ошибок на странице для раннего выхода.
+   */
+  async function waitForCreateReady(maxWait = 15000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWait) {
+      // Проверяем ошибки
+      const err = FlowSelectors.getPageError();
+      if (err) throw new Error(`Ошибка Flow: "${err}"`);
+
+      const btn = FlowSelectors.getGenerateButton();
+      if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
+        return btn;
+      }
+      await FB.sleep(500);
+    }
+    throw new Error('Кнопка Create заблокирована после ' + (maxWait / 1000) + 'с ожидания');
+  }
+
   async function processOnePrompt(promptData) {
     const { prompt } = promptData;
     const { settings } = FB.state;
@@ -43,44 +66,37 @@
         console.log('[FlowBatch] [queue] Шаг 1: autoDismissModals...');
         await FB.autoDismissModals();
 
-        // 2) Найти поле ввода
+        // 2) Проверка ошибок на странице (от предыдущей попытки)
+        const prevError = FlowSelectors.getPageError();
+        if (prevError) {
+          console.log('[FlowBatch] [queue] Обнаружена ошибка от предыдущей попытки:', prevError);
+          // Ждём, пока исчезнет (Flow обычно показывает snackbar ~5с)
+          await FB.sleep(5000);
+        }
+
+        // 3) Найти поле ввода
         console.log('[FlowBatch] [queue] Шаг 2: ищем поле промпта...');
         const input = await FB.waitForElement(() => FlowSelectors.getPromptInput(), 15000);
         console.log('[FlowBatch] [queue] Шаг 2: поле найдено:', input.tagName, input.getAttribute('role'));
 
-        // 3) Ввести текст
+        // 4) Ввести текст (v0.6 — улучшенные стратегии)
         console.log('[FlowBatch] [queue] Шаг 3: вводим текст...');
-        await FB.setPromptText(input, prompt);
-        await FB.sleep(800); // ← увеличен с 500 до 800 для Angular
+        const inputResult = await FB.setPromptText(input, prompt);
+        await FB.sleep(1500); // ← увеличен с 800 до 1500 для Angular change detection
 
-        // 4) Проверяем, что текст появился
-        const actualText = input.textContent || input.innerText || input.value || '';
-        console.log(`[FlowBatch] [queue] Шаг 3b: текст в поле = "${actualText.substring(0, 50)}"`);
+        // 5) Проверяем текст (используем getCleanText)
+        const actualText = FB.getCleanText(input);
+        console.log(`[FlowBatch] [queue] Шаг 3b: чистый текст в поле = "${actualText.substring(0, 60)}"`);
+        
         if (actualText.trim().length === 0) {
-          console.warn('[FlowBatch] [queue] ВНИМАНИЕ: текст не появился в поле!');
-          FB.notifyPanel({ type: 'LOG', text: 'ВНИМАНИЕ: текст не появился в поле ввода', level: 'warning' });
+          console.warn('[FlowBatch] [queue] ВНИМАНИЕ: чистый текст пуст! Raw textContent:', (input.textContent || '').substring(0, 80));
+          FB.notifyPanel({ type: 'LOG', text: 'ВНИМАНИЕ: текст не распознан Flow', level: 'warning' });
         }
 
-        // 5) Найти кнопку Create
-        console.log('[FlowBatch] [queue] Шаг 4: ищем кнопку Create...');
-        const createBtn = await FB.waitForElement(() => FlowSelectors.getGenerateButton(), 10000);
-        console.log('[FlowBatch] [queue] Шаг 4: кнопка найдена, disabled =', createBtn.disabled, 
-          ', aria-disabled =', createBtn.getAttribute('aria-disabled'));
-
-        // 6) Если кнопка заблокирована — ждём
-        if (createBtn.disabled || createBtn.getAttribute('aria-disabled') === 'true') {
-          console.warn('[FlowBatch] [queue] Кнопка Create заблокирована! Ждём 5с...');
-          FB.notifyPanel({ type: 'LOG', text: 'Кнопка Create заблокирована, ждём...', level: 'warning' });
-          await FB.sleep(5000);
-          
-          // Повторная проверка
-          const createBtn2 = FlowSelectors.getGenerateButton();
-          if (createBtn2 && (createBtn2.disabled || createBtn2.getAttribute('aria-disabled') === 'true')) {
-            console.error('[FlowBatch] [queue] Кнопка всё ещё заблокирована после ожидания');
-            FB.notifyPanel({ type: 'LOG', text: 'Create всё ещё заблокирована — возможно текст не распознан Flow', level: 'error' });
-            throw new Error('Кнопка Create заблокирована — Flow не видит введённый текст');
-          }
-        }
+        // 6) Ждём готовность кнопки Create (с проверкой ошибок)
+        console.log('[FlowBatch] [queue] Шаг 4: ждём готовность Create...');
+        const createBtn = await waitForCreateReady(10000);
+        console.log('[FlowBatch] [queue] Шаг 4: кнопка Create готова');
 
         // 7) Нажать Create
         console.log('[FlowBatch] [queue] Шаг 5: нажимаем Create...');
@@ -88,7 +104,14 @@
         console.log('[FlowBatch] [queue] Шаг 5: клик выполнен');
         FB.notifyPanel({ type: 'LOG', text: 'Нажата кнопка Create', level: 'info' });
 
-        // 8) Ждём завершения генерации
+        // 8) Короткая пауза и проверка ошибки сразу после клика
+        await FB.sleep(3000);
+        const postClickError = FlowSelectors.getPageError();
+        if (postClickError) {
+          throw new Error(`Ошибка после Create: "${postClickError}"`);
+        }
+
+        // 9) Ждём завершения генерации
         console.log('[FlowBatch] [queue] Шаг 6: ожидание завершения генерации...');
         const genTimeout = settings.mode.includes('video') ? 300000 : 120000;
         await FB.waitForGenerationComplete(genTimeout);
@@ -96,7 +119,7 @@
         console.log(`[FlowBatch] [queue] Генерация завершена: "${short}..."`);
         FB.notifyPanel({ type: 'LOG', text: `Генерация завершена: "${short}..."`, level: 'success' });
 
-        // 9) Авто-скачивание
+        // 10) Авто-скачивание
         if (settings.autoDownload) {
           console.log('[FlowBatch] [queue] Шаг 7: авто-скачивание...');
           await FB.sleep(2000);
@@ -123,6 +146,11 @@
 
     await FB.autoDismissModals();
     
+    // ФОРМАТ (НОВОЕ v0.6)
+    console.log('[FlowBatch] [queue] Настройка формата...');
+    await FB.setupFormat();
+    await FB.sleep(500);
+
     // ULTRA
     console.log('[FlowBatch] [queue] Настройка ULTRA...');
     await FB.setupUltra();
