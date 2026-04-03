@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FlowBatch — Автоматизация Google Flow",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Пакетная генерация видео и изображений в Google Flow с авто-скачиванием в 4K",
 
   "permissions": [
