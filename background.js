@@ -1,7 +1,12 @@
 /**
- * FlowBatch — Background Service Worker v0.4.1
- * Простая надёжная логика: открытие Side Panel по клику на иконку.
+ * FlowBatch — Background Service Worker v0.5
+ * Исправлено: sidePanel открывается через setPanelBehavior, без open().
  */
+
+// ─── При запуске: настраиваем поведение Side Panel ──────
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+  .then(() => console.log('[FlowBatch] Side Panel: openPanelOnActionClick = true'))
+  .catch(e => console.error('[FlowBatch] setPanelBehavior ошибка:', e));
 
 // ─── При установке ──────────────────────────────────────
 chrome.runtime.onInstalled.addListener((details) => {
@@ -21,15 +26,6 @@ chrome.runtime.onInstalled.addListener((details) => {
         useUltra: true
       }
     });
-  }
-});
-
-// ─── Клик по иконке → открыть Side Panel ────────────────
-chrome.action.onClicked.addListener(async (tab) => {
-  try {
-    await chrome.sidePanel.open({ windowId: tab.windowId });
-  } catch (e) {
-    console.error('[FlowBatch] Ошибка открытия Side Panel:', e);
   }
 });
 
