@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlowBatch</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="container">
+
+    <!-- Заголовок -->
+    <header class="header">
+      <div class="header-brand">
+        <span class="logo">⚡</span>
+        <h1>FlowBatch</h1>
+        <span class="version">v0.2</span>
+      </div>
+      <div class="header-right">
+        <div id="connection-status" class="status-dot disconnected" title="Не подключено"></div>
+      </div>
+    </header>
+
+    <!-- Статус -->
+    <div id="status-bar" class="status-bar">
+      <span id="status-text">Откройте Google Flow и нажмите сюда...</span>
+    </div>
+
+    <!-- Табы -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="queue">Очередь</button>
+      <button class="tab" data-tab="settings">Настройки</button>
+      <button class="tab" data-tab="log">Лог</button>
+    </nav>
+
+    <!-- ════════════════ Таб: Очередь ════════════════ -->
+    <section id="tab-queue" class="tab-content active">
+
+      <!-- Режим генерации -->
+      <div class="form-group">
+        <label>Режим</label>
+        <select id="mode-select">
+          <option value="text-to-image">Текст → Изображение</option>
+          <option value="text-to-video">Текст → Видео</option>
+          <option value="image-to-video">Изображение → Видео</option>
+        </select>
+      </div>
+
+      <!-- Ввод промптов -->
+      <div class="form-group">
+        <label>Промпты <small>(разделяй пустой строкой)</small></label>
+        <textarea id="prompts-input" rows="10" placeholder="A serene sunset over a calm ocean with gentle waves.&#10;&#10;A bustling city street at night with neon lights.&#10;&#10;A robot painting a masterpiece in a sunlit studio."></textarea>
+      </div>
+
+      <!-- Загрузка из файла -->
+      <div class="form-group row">
+        <button id="btn-upload" class="btn btn-secondary">📁 Загрузить .txt</button>
+        <input type="file" id="file-input" accept=".txt" hidden>
+        <span id="file-info" class="file-info"></span>
+      </div>
+
+      <!-- Прогресс -->
+      <div id="progress-section" class="progress-section hidden">
+        <div class="progress-bar-container">
+          <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+        </div>
+        <div class="progress-info">
+          <span id="progress-text">0 / 0</span>
+          <span id="progress-current-prompt" class="current-prompt"></span>
+        </div>
+      </div>
+
+      <!-- Кнопки управления -->
+      <div class="controls">
+        <button id="btn-start" class="btn btn-primary btn-large">▶ Запустить</button>
+        <button id="btn-pause" class="btn btn-warning hidden">⏸ Пауза</button>
+        <button id="btn-resume" class="btn btn-primary hidden">▶ Продолжить</button>
+        <button id="btn-stop" class="btn btn-danger hidden">⏹ Стоп</button>
+      </div>
+
+      <!-- Список промптов в очереди -->
+      <div id="queue-list" class="queue-list"></div>
+    </section>
+
+    <!-- ════════════════ Таб: Настройки ════════════════ -->
+    <section id="tab-settings" class="tab-content">
+
+      <div class="settings-group">
+        <h3 class="settings-title">Модели</h3>
+        <div class="form-group">
+          <label>Модель изображений</label>
+          <select id="setting-model">
+            <option value="Nano Banana Pro">Nano Banana Pro</option>
+            <option value="Nano Banana 2">Nano Banana 2</option>
+            <option value="Imagen 4">Imagen 4</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Модель видео</label>
+          <select id="setting-video-model">
+            <option value="Veo 3.1 Fast">Veo 3.1 Fast</option>
+            <option value="Veo 3.1 Quality">Veo 3.1 Quality</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3 class="settings-title">Параметры генерации</h3>
+        <div class="form-group">
+          <label>Соотношение сторон</label>
+          <select id="setting-aspect">
+            <option value="16:9">16:9 (Landscape)</option>
+            <option value="9:16">9:16 (Portrait)</option>
+            <option value="1:1">1:1 (Square)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Количество выходов на промпт</label>
+          <select id="setting-outputs">
+            <option value="1">1</option>
+            <option value="2" selected>2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3 class="settings-title">Скачивание</h3>
+        <div class="form-group">
+          <label>Разрешение</label>
+          <select id="setting-resolution">
+            <option value="4K">4K (Ultra)</option>
+            <option value="2K">2K</option>
+            <option value="1K">1K</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="setting-autodownload" checked>
+            Авто-скачивание после генерации
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3 class="settings-title">Очередь</h3>
+        <div class="form-group">
+          <label>Задержка между промптами (сек)</label>
+          <input type="number" id="setting-delay" min="1" max="300" value="5">
+        </div>
+        <div class="form-group">
+          <label>Макс. попыток при ошибке</label>
+          <input type="number" id="setting-retries" min="1" max="20" value="3">
+        </div>
+      </div>
+
+      <button id="btn-save-settings" class="btn btn-primary btn-full">💾 Сохранить настройки</button>
+
+      <!-- Диагностика -->
+      <div class="divider"></div>
+      <div class="settings-group">
+        <h3 class="settings-title">Диагностика</h3>
+        <button id="btn-diagnose" class="btn btn-secondary btn-full">🔍 Сканировать DOM страницы</button>
+        <div id="diagnose-output" class="diagnose-output hidden"></div>
+      </div>
+    </section>
+
+    <!-- ════════════════ Таб: Лог ════════════════ -->
+    <section id="tab-log" class="tab-content">
+      <div class="log-controls">
+        <span class="log-counter" id="log-counter">0 записей</span>
+        <button id="btn-clear-log" class="btn btn-secondary btn-sm">🗑 Очистить</button>
+      </div>
+      <div id="log-list" class="log-list">
+        <div class="log-entry info">FlowBatch загружен</div>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
