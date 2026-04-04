@@ -1,9 +1,10 @@
 /**
- * FlowBatch — Управление очередью промптов v0.8
- * Изменения:
- * - Увеличена задержка после ввода текста (2000мс для Slate model sync)
- * - Улучшена проверка текста после ввода
- * - Логирование DOM для отладки при ошибке ввода
+ * FlowBatch — Управление очередью промптов v0.10
+ * 
+ * ИЗМЕНЕНИЯ v0.10:
+ * - Клик Create: двойная стратегия (page context React onClick + стандартный клик)
+ * - Улучшено ожидание после Create: проверка сети
+ * - Увеличены задержки для стабильности
  */
 (() => {
   'use strict';
@@ -21,7 +22,7 @@
       if (current > lastKnownAssetCount) {
         const diff = current - lastKnownAssetCount;
         lastKnownAssetCount = current;
-        console.log(`[FlowBatch] +${diff} новых ассетов`);
+        console.log(`[FlowBatch] +${diff} новых ассетов (всего ${current})`);
         callback(assets, diff);
       }
     });
@@ -73,7 +74,7 @@
         const input = await FB.waitForElement(() => FlowSelectors.getPromptInput(), 15000);
         console.log('[FlowBatch] [queue] Шаг 2: поле найдено:', input.tagName, input.getAttribute('role'));
 
-        // 4) Ввести текст (v0.8 — Slate.js paste strategy)
+        // 4) Ввести текст
         console.log('[FlowBatch] [queue] Шаг 3: вводим текст...');
         const inputResult = await FB.setPromptText(input, prompt);
         
@@ -89,7 +90,6 @@
         if (!actualText && !rawText.includes(prompt.substring(0, 15))) {
           console.warn('[FlowBatch] [queue] ВНИМАНИЕ: текст НЕ введён!');
           FB.notifyPanel({ type: 'LOG', text: 'ВНИМАНИЕ: текст не введён — Slate не принял ввод', level: 'warning' });
-          // Не прерываем — всё равно попробуем Create, вдруг Slate model обновлён
         }
 
         // 6) Ждём готовность кнопки Create
@@ -97,9 +97,26 @@
         const createBtn = await waitForCreateReady(10000);
         console.log('[FlowBatch] [queue] Шаг 4: кнопка Create готова');
 
-        // 7) Нажать Create
-        console.log('[FlowBatch] [queue] Шаг 5: нажимаем Create...');
-        await FB.clickElement(createBtn);
+        // 7) Нажать Create — ДВОЙНАЯ СТРАТЕГИЯ v0.10
+        console.log('[FlowBatch] [queue] Шаг 5: нажимаем Create (двойная стратегия)...');
+        
+        // Стратегия A: Клик через page context (React onClick props)
+        let createResult = null;
+        try {
+          createResult = await FB.clickCreate();
+          console.log('[FlowBatch] [queue] Шаг 5a: React click результат:', 
+            createResult?.success ? 'УСПЕХ' : 'НЕУДАЧА', 
+            'метод:', createResult?.method);
+        } catch (e) {
+          console.warn('[FlowBatch] [queue] Шаг 5a: React click ошибка:', e.message);
+        }
+        
+        // Стратегия B: Стандартный клик (подстраховка)
+        if (!createResult?.success) {
+          console.log('[FlowBatch] [queue] Шаг 5b: стандартный клик...');
+          await FB.clickElement(createBtn);
+        }
+        
         console.log('[FlowBatch] [queue] Шаг 5: клик выполнен');
         FB.notifyPanel({ type: 'LOG', text: 'Нажата кнопка Create', level: 'info' });
 
@@ -110,15 +127,34 @@
           throw new Error(`Ошибка после Create: "${postClickError}"`);
         }
 
-        // 9) Ждём завершения генерации
+        // 9) Проверка сети — начался ли запрос генерации?
+        console.log('[FlowBatch] [queue] Шаг 5c: проверяем сеть...');
+        try {
+          const netState = await FB.getNetworkState();
+          console.log('[FlowBatch] [queue] Сеть:', JSON.stringify({
+            pending: netState?.pending,
+            generationDetected: netState?.generationDetected,
+            recentCount: netState?.recent?.length
+          }));
+          
+          if (netState?.recent && netState.recent.length > 0) {
+            for (const req of netState.recent.slice(-5)) {
+              console.log(`[FlowBatch] [queue] Сеть: ${req.method || '?'} ${req.url} → ${req.status} (${req.age}мс назад)`);
+            }
+          }
+        } catch (e) {
+          console.warn('[FlowBatch] [queue] Ошибка проверки сети:', e.message);
+        }
+
+        // 10) Ждём завершения генерации
         console.log('[FlowBatch] [queue] Шаг 6: ожидание завершения генерации...');
         const genTimeout = settings.mode.includes('video') ? 300000 : 120000;
-        await FB.waitForGenerationComplete(genTimeout);
+        const genResult = await FB.waitForGenerationComplete(genTimeout);
 
         console.log(`[FlowBatch] [queue] Генерация завершена: "${short}..."`);
         FB.notifyPanel({ type: 'LOG', text: `Генерация завершена: "${short}..."`, level: 'success' });
 
-        // 10) Авто-скачивание
+        // 11) Авто-скачивание
         if (settings.autoDownload) {
           console.log('[FlowBatch] [queue] Шаг 7: авто-скачивание...');
           await FB.sleep(2000);

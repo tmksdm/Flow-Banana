@@ -1,51 +1,141 @@
 /**
- * FlowBatch — Page Context Script v0.9
+ * FlowBatch — Page Context Script v0.10
  * 
- * Запускается через "world": "MAIN" в manifest.json.
- * Работает в контексте страницы → полный доступ к:
- * - React Fiber tree
- * - Slate Editor instance
- * - Нативным обработчикам событий
- * 
- * Коммуникация с content script через window events (CustomEvent).
+ * ИЗМЕНЕНИЯ v0.10:
+ * - Добавлен детальный мониторинг ВСЕХ fetch/XHR (логирование method, url, status)
+ * - Добавлена функция clickViaReact — клик через React props (__reactProps$)
+ * - Добавлен глобальный трекер сетевой активности (для определения начала генерации)
+ * - Добавлена команда "scan-ui" для глубокого сканирования toolbar/кнопок
+ * - Добавлена команда "click-create-react" для клика Create через React
  */
 (() => {
   'use strict';
 
-  // Защита от двойной загрузки
-  if (window.__flowbatch_injected_v09) return;
-  window.__flowbatch_injected_v09 = true;
+  if (window.__flowbatch_injected_v10) return;
+  window.__flowbatch_injected_v10 = true;
 
-  console.log('[FlowBatch/page] Page context script v0.9 загружен');
+  console.log('[FlowBatch/page] Page context script v0.10 загружен');
 
   // ─── Кеш Slate Editor ──────────────────────────────────
   let cachedSlateEditor = null;
   let cachedEditorElement = null;
 
+  // ─── Трекер сетевой активности ─────────────────────────
+  // Используется для определения начала/завершения генерации
+  const networkTracker = {
+    pendingRequests: 0,
+    lastRequestTime: 0,
+    lastResponseTime: 0,
+    recentRequests: [], // последние 30 запросов {url, method, status, time}
+    generationSignalDetected: false,
+    
+    onRequestStart(url, method) {
+      this.pendingRequests++;
+      this.lastRequestTime = Date.now();
+      this.recentRequests.push({ url, method, status: 'pending', time: Date.now() });
+      if (this.recentRequests.length > 30) this.recentRequests.shift();
+      
+      // Детектируем запрос генерации
+      if (this._isGenerationRequest(url, method)) {
+        this.generationSignalDetected = true;
+        console.log('[FlowBatch/page] 🚀 Обнаружен запрос генерации:', method, url.substring(0, 100));
+        window.dispatchEvent(new CustomEvent('flowbatch-generation-started', {
+          detail: { url, method, timestamp: Date.now() }
+        }));
+      }
+    },
+    
+    onRequestEnd(url, status) {
+      this.pendingRequests = Math.max(0, this.pendingRequests - 1);
+      this.lastResponseTime = Date.now();
+      
+      // Обновляем статус в recentRequests
+      const entry = this.recentRequests.findLast(r => r.url === url && r.status === 'pending');
+      if (entry) entry.status = status;
+      
+      // Детектируем ответ генерации
+      if (this._isGenerationRequest(url, 'response')) {
+        console.log('[FlowBatch/page] ✅ Ответ генерации получен:', status, url.substring(0, 100));
+        window.dispatchEvent(new CustomEvent('flowbatch-generation-response', {
+          detail: { url, status, timestamp: Date.now() }
+        }));
+      }
+    },
+    
+    _isGenerationRequest(url, method) {
+      const u = url.toLowerCase();
+      return (
+        u.includes('generate') ||
+        u.includes('prediction') ||
+        u.includes('generativelanguage') ||
+        u.includes('aiplatform') ||
+        u.includes('imagen') ||
+        u.includes('veo') ||
+        (u.includes('api') && (u.includes('create') || u.includes('run'))) ||
+        (method === 'POST' && (u.includes('model') || u.includes('endpoint')))
+      );
+    },
+    
+    resetGenerationSignal() {
+      this.generationSignalDetected = false;
+    },
+    
+    getState() {
+      return {
+        pending: this.pendingRequests,
+        lastReqAge: Date.now() - this.lastRequestTime,
+        lastRespAge: Date.now() - this.lastResponseTime,
+        generationDetected: this.generationSignalDetected,
+        recent: this.recentRequests.slice(-10).map(r => ({
+          url: r.url.substring(0, 80),
+          method: r.method,
+          status: r.status,
+          age: Date.now() - r.time
+        }))
+      };
+    }
+  };
+
   // ─── Перехват fetch ─────────────────────────────────────
   const originalFetch = window.fetch;
   window.fetch = async function (...args) {
-    const response = await originalFetch.apply(this, args);
+    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+    const method = args[1]?.method || (typeof args[0] === 'object' ? args[0]?.method : null) || 'GET';
+    
+    networkTracker.onRequestStart(url, method);
+    
     try {
-      const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+      const response = await originalFetch.apply(this, args);
+      
+      networkTracker.onRequestEnd(url, response.status);
+      
+      // Уведомление content script о важных запросах
       if (
         url.includes('generativelanguage') ||
         url.includes('generated') ||
         url.includes('download') ||
+        url.includes('generate') ||
+        url.includes('prediction') ||
         (url.includes('image') && url.includes('output'))
       ) {
         window.dispatchEvent(new CustomEvent('flowbatch-intercepted', {
-          detail: { url, type: 'fetch', timestamp: Date.now() }
+          detail: { url, method, status: response.status, type: 'fetch', timestamp: Date.now() }
         }));
       }
-    } catch (e) {}
-    return response;
+      
+      return response;
+    } catch (err) {
+      networkTracker.onRequestEnd(url, 'error');
+      throw err;
+    }
   };
 
   // ─── Перехват XMLHttpRequest ──────────────────────────
   const originalXHROpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
     this._flowbatch_url = url;
+    this._flowbatch_method = method;
+    networkTracker.onRequestStart(url, method);
     return originalXHROpen.call(this, method, url, ...rest);
   };
 
@@ -54,21 +144,27 @@
     this.addEventListener('load', function () {
       try {
         const url = this._flowbatch_url || '';
+        networkTracker.onRequestEnd(url, this.status);
+        
         if (
           url.includes('generativelanguage') ||
           url.includes('generated') ||
-          url.includes('download')
+          url.includes('download') ||
+          url.includes('generate')
         ) {
           window.dispatchEvent(new CustomEvent('flowbatch-intercepted', {
-            detail: { url, type: 'xhr', timestamp: Date.now() }
+            detail: { url, method: this._flowbatch_method, status: this.status, type: 'xhr', timestamp: Date.now() }
           }));
         }
       } catch (e) {}
     });
+    this.addEventListener('error', function () {
+      networkTracker.onRequestEnd(this._flowbatch_url || '', 'error');
+    });
     return originalXHRSend.apply(this, args);
   };
 
-  // ─── Поиск React Fiber Root ────────────────────────────
+  // ─── React Fiber / Props helpers ───────────────────────
   function findReactFiberKey(element) {
     if (!element) return null;
     return Object.keys(element).find(k =>
@@ -83,11 +179,82 @@
     ) || null;
   }
 
+  // ─── Клик через React props (onClick) ──────────────────
+  /**
+   * Вызывает React onClick handler напрямую через __reactProps$.
+   * Это обходит проблему с isTrusted: false.
+   */
+  function clickViaReact(element) {
+    if (!element) return false;
+    
+    const propsKey = findReactPropsKey(element);
+    if (propsKey) {
+      const props = element[propsKey];
+      if (typeof props?.onClick === 'function') {
+        const rect = element.getBoundingClientRect();
+        const syntheticEvent = {
+          type: 'click',
+          target: element,
+          currentTarget: element,
+          bubbles: true,
+          cancelable: true,
+          defaultPrevented: false,
+          preventDefault: () => {},
+          stopPropagation: () => {},
+          nativeEvent: new MouseEvent('click', { bubbles: true }),
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2,
+          persist: () => {},
+          isDefaultPrevented: () => false,
+          isPropagationStopped: () => false,
+        };
+        props.onClick(syntheticEvent);
+        console.log('[FlowBatch/page] clickViaReact: onClick вызван через props');
+        return true;
+      }
+    }
+    
+    // Fallback: ищем onClick в fiber tree (вверх по дереву)
+    const fiberKey = findReactFiberKey(element);
+    if (fiberKey) {
+      let fiber = element[fiberKey];
+      let depth = 10;
+      while (fiber && depth-- > 0) {
+        const fiberProps = fiber.memoizedProps || fiber.pendingProps;
+        if (fiberProps && typeof fiberProps.onClick === 'function') {
+          const rect = element.getBoundingClientRect();
+          fiberProps.onClick({
+            type: 'click',
+            target: element,
+            currentTarget: element,
+            bubbles: true,
+            cancelable: true,
+            defaultPrevented: false,
+            preventDefault: () => {},
+            stopPropagation: () => {},
+            nativeEvent: new MouseEvent('click', { bubbles: true }),
+            clientX: rect.left + rect.width / 2,
+            clientY: rect.top + rect.height / 2,
+            persist: () => {},
+            isDefaultPrevented: () => false,
+            isPropagationStopped: () => false,
+          });
+          console.log('[FlowBatch/page] clickViaReact: onClick найден в fiber tree');
+          return true;
+        }
+        fiber = fiber.return;
+      }
+    }
+    
+    console.log('[FlowBatch/page] clickViaReact: onClick не найден, используем нативный click()');
+    element.click();
+    return true;
+  }
+
   // ─── Поиск Slate Editor через React Fiber ─────────────
   function findSlateEditor(domElement) {
     if (!domElement) return null;
 
-    // Если кешированный ещё валиден
     if (cachedSlateEditor && cachedEditorElement === domElement) {
       try {
         if (typeof cachedSlateEditor.insertText === 'function') {
@@ -107,14 +274,12 @@
     let maxDepth = 50;
 
     while (fiber && maxDepth-- > 0) {
-      // Проверяем memoizedState (hooks chain)
       if (fiber.memoizedState) {
         let hookState = fiber.memoizedState;
         let hookDepth = 30;
         while (hookState && hookDepth-- > 0) {
           const val = hookState.memoizedState;
 
-          // Slate Editor — объект с характерными методами
           if (isSlateEditorObject(val)) {
             console.log('[FlowBatch/page] Slate Editor найден в hooks (memoizedState)');
             cachedSlateEditor = val;
@@ -122,7 +287,6 @@
             return val;
           }
 
-          // Проверяем ref (useRef)
           if (val && typeof val === 'object' && val.current && isSlateEditorObject(val.current)) {
             console.log('[FlowBatch/page] Slate Editor найден в ref.current');
             cachedSlateEditor = val.current;
@@ -130,7 +294,6 @@
             return val.current;
           }
 
-          // Проверяем массивы (useMemo с зависимостями)
           if (Array.isArray(val)) {
             for (const item of val) {
               if (isSlateEditorObject(item)) {
@@ -146,16 +309,8 @@
         }
       }
 
-      // Проверяем props
       const props = fiber.memoizedProps || fiber.pendingProps;
       if (props) {
-        if (isSlateEditorObject(props.editor)) {
-          console.log('[FlowBatch/page] Slate Editor найден в fiber.props.editor');
-          cachedSlateEditor = props.editor;
-          cachedEditorElement = domElement;
-          return props.editor;
-        }
-        // Иногда editor передаётся как часть context
         for (const key of Object.keys(props)) {
           if (isSlateEditorObject(props[key])) {
             console.log(`[FlowBatch/page] Slate Editor найден в fiber.props.${key}`);
@@ -166,7 +321,6 @@
         }
       }
 
-      // Проверяем stateNode
       if (fiber.stateNode && isSlateEditorObject(fiber.stateNode)) {
         console.log('[FlowBatch/page] Slate Editor найден в stateNode');
         cachedSlateEditor = fiber.stateNode;
@@ -183,7 +337,6 @@
 
   function isSlateEditorObject(val) {
     if (!val || typeof val !== 'object') return false;
-    // Slate Editor имеет: children (массив), selection, onChange, apply, insertText, deleteBackward
     return (
       typeof val.insertText === 'function' &&
       typeof val.apply === 'function' &&
@@ -192,7 +345,6 @@
     );
   }
 
-  // ─── Получить React onPaste handler для элемента ──────
   function getReactPasteHandler(domElement) {
     const propsKey = findReactPropsKey(domElement);
     if (!propsKey) return null;
@@ -204,21 +356,12 @@
   }
 
   // ─── Установка текста через Slate API ──────────────────
-  /**
-   * Стратегия A: Прямой вызов Slate Editor API
-   * - Slate.Transforms.select(editor, []) → выделить всё
-   * - editor.deleteFragment() → удалить
-   * - editor.insertText(text) → вставить
-   * - editor.onChange() → уведомить React
-   */
   function setTextViaSlateAPI(editor, text) {
     try {
       console.log('[FlowBatch/page] setTextViaSlateAPI: начинаем...');
       console.log('[FlowBatch/page] editor.children:', JSON.stringify(editor.children).substring(0, 200));
       console.log('[FlowBatch/page] editor.selection:', JSON.stringify(editor.selection));
 
-      // 1) Выделяем весь документ
-      // Slate.Transforms.select реализуется через editor.apply с операцией set_selection
       const hasContent = editor.children.some(node => {
         if (node.children) {
           return node.children.some(child => (child.text || '').length > 0);
@@ -227,14 +370,12 @@
       });
 
       if (hasContent) {
-        // Находим конец документа
         const lastNodeIndex = editor.children.length - 1;
         const lastNode = editor.children[lastNodeIndex];
         const lastChildIndex = lastNode.children ? lastNode.children.length - 1 : 0;
         const lastChild = lastNode.children ? lastNode.children[lastChildIndex] : lastNode;
         const lastOffset = (lastChild.text || '').length;
 
-        // Устанавливаем selection на весь документ
         const anchor = { path: [0, 0], offset: 0 };
         const focus = { path: [lastNodeIndex, lastChildIndex], offset: lastOffset };
 
@@ -245,14 +386,10 @@
         });
 
         console.log('[FlowBatch/page] Selection установлен:', JSON.stringify({ anchor, focus }));
-
-        // 2) Удаляем выделенный текст
         editor.deleteFragment();
         console.log('[FlowBatch/page] deleteFragment выполнен');
       }
 
-      // 3) Вставляем новый текст
-      // Сначала убедимся что selection установлен
       if (!editor.selection) {
         editor.apply({
           type: 'set_selection',
@@ -267,7 +404,6 @@
       editor.insertText(text);
       console.log('[FlowBatch/page] insertText выполнен');
 
-      // 4) Trigger onChange чтобы React увидел изменения
       if (typeof editor.onChange === 'function') {
         editor.onChange();
         console.log('[FlowBatch/page] onChange вызван');
@@ -281,10 +417,6 @@
     }
   }
 
-  /**
-   * Стратегия B: Вызов React onPaste handler напрямую
-   * Создаём фейковый React SyntheticEvent с clipboardData
-   */
   function setTextViaReactPaste(domElement, text) {
     try {
       const onPaste = getReactPasteHandler(domElement);
@@ -294,12 +426,9 @@
       }
 
       console.log('[FlowBatch/page] Вызываем React onPaste напрямую...');
-
-      // Сначала selectAll + delete чтобы заменить содержимое
       domElement.focus();
       document.execCommand('selectAll', false, null);
 
-      // Создаём фейковый event похожий на React SyntheticEvent
       const dt = new DataTransfer();
       dt.setData('text/plain', text);
 
@@ -335,7 +464,7 @@
     }
   }
 
-  // ─── Обработчик запросов от content script ─────────────
+  // ─── Обработчик settext ────────────────────────────────
   window.addEventListener('flowbatch-settext-request', (e) => {
     const { text, requestId } = e.detail || {};
     if (!text || !requestId) return;
@@ -355,13 +484,11 @@
         return;
       }
 
-      // ── Стратегия A: Slate Editor API ──
       const editor = findSlateEditor(element);
       if (editor) {
         console.log('[FlowBatch/page] Стратегия A: Slate Editor API');
         const result = setTextViaSlateAPI(editor, text);
         if (result) {
-          // Проверяем результат через editor.children
           const editorText = editor.children
             .map(n => (n.children || [n]).map(c => c.text || '').join(''))
             .join('\n')
@@ -371,16 +498,14 @@
             respond({ success: true, method: 'slate-api', editorText: editorText.substring(0, 60) });
             return;
           } else {
-            console.warn('[FlowBatch/page] Slate API: текст в editor.children не совпадает:', editorText.substring(0, 60));
+            console.warn('[FlowBatch/page] Slate API: текст не совпадает:', editorText.substring(0, 60));
           }
         }
       }
 
-      // ── Стратегия B: React onPaste ──
       console.log('[FlowBatch/page] Стратегия B: React onPaste');
       const pasteResult = setTextViaReactPaste(element, text);
       if (pasteResult) {
-        // Даём время React на re-render
         setTimeout(() => {
           const domText = (element.textContent || '').trim();
           const editorText = editor ? editor.children
@@ -398,7 +523,6 @@
         return;
       }
 
-      // ── Стратегия C: Диспатч paste из page context ──
       console.log('[FlowBatch/page] Стратегия C: нативный paste из page context');
       element.focus();
       document.execCommand('selectAll', false, null);
@@ -411,8 +535,7 @@
         cancelable: true,
         composed: true,
       });
-      const cancelled = !element.dispatchEvent(pasteEvent);
-      console.log('[FlowBatch/page] paste dispatched, cancelled:', cancelled);
+      element.dispatchEvent(pasteEvent);
 
       setTimeout(() => {
         const domText = (element.textContent || '').trim();
@@ -429,6 +552,169 @@
     }
   });
 
+  // ─── Обработчик click-create-react ─────────────────────
+  window.addEventListener('flowbatch-click-request', (e) => {
+    const { selector, requestId } = e.detail || {};
+    if (!requestId) return;
+
+    const respond = (data) => {
+      window.dispatchEvent(new CustomEvent('flowbatch-click-response', {
+        detail: { requestId, ...data }
+      }));
+    };
+
+    try {
+      // Сбрасываем сигнал генерации перед кликом
+      networkTracker.resetGenerationSignal();
+      
+      let element = null;
+      if (selector === 'CREATE_BUTTON') {
+        // Ищем кнопку Create
+        const allBtns = document.querySelectorAll('button, [role="button"]');
+        for (const btn of allBtns) {
+          if (btn.offsetParent === null) continue;
+          const text = btn.textContent.trim();
+          // "arrow_forwardCreate" → содержит "Create"
+          if (/\bCreate\b/i.test(text)) {
+            element = btn;
+            break;
+          }
+        }
+      } else if (selector) {
+        element = document.querySelector(selector);
+      }
+
+      if (!element) {
+        respond({ success: false, reason: 'element_not_found' });
+        return;
+      }
+
+      console.log('[FlowBatch/page] clickViaReact для:', element.textContent.trim().substring(0, 40));
+      
+      // Попытка 1: React onClick через props
+      const reactClicked = clickViaReact(element);
+      
+      // Попытка 2: нативный click() как подстраховка
+      setTimeout(() => {
+        element.click();
+      }, 100);
+      
+      // Даём время на сетевой запрос
+      setTimeout(() => {
+        respond({
+          success: true,
+          method: reactClicked ? 'react-props' : 'native-click',
+          networkState: networkTracker.getState()
+        });
+      }, 2000);
+      
+    } catch (err) {
+      respond({ success: false, reason: err.message });
+    }
+  });
+
+  // ─── Обработчик network-state ──────────────────────────
+  window.addEventListener('flowbatch-network-state-request', (e) => {
+    const { requestId } = e.detail || {};
+    window.dispatchEvent(new CustomEvent('flowbatch-network-state-response', {
+      detail: { requestId, ...networkTracker.getState() }
+    }));
+  });
+
+  // ─── Обработчик scan-ui ────────────────────────────────
+  window.addEventListener('flowbatch-scan-ui-request', (e) => {
+    const { requestId } = e.detail || {};
+    
+    const respond = (data) => {
+      window.dispatchEvent(new CustomEvent('flowbatch-scan-ui-response', {
+        detail: { requestId, ...data }
+      }));
+    };
+    
+    try {
+      const promptEl = document.querySelector('[contenteditable="true"][role="textbox"]');
+      
+      // Ищем toolbar / control area рядом с промптом
+      // Поднимаемся вверх от промпта и сканируем соседние элементы
+      const toolbarElements = [];
+      
+      if (promptEl) {
+        let container = promptEl.parentElement;
+        let depth = 0;
+        
+        while (container && depth < 8) {
+          // Ищем все кликабельные элементы в контейнере
+          const clickables = container.querySelectorAll('button, [role="button"], [role="tab"], [role="radio"], [role="menuitem"], [role="option"], a[href], [tabindex="0"]');
+          
+          for (const el of clickables) {
+            if (el === promptEl) continue;
+            if (el.contains(promptEl)) continue;
+            
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) continue;
+            
+            const text = el.textContent.trim().substring(0, 60);
+            const propsKey = findReactPropsKey(el);
+            const hasOnClick = propsKey ? typeof el[propsKey]?.onClick === 'function' : false;
+            
+            toolbarElements.push({
+              tag: el.tagName,
+              role: el.getAttribute('role') || '',
+              ariaLabel: el.getAttribute('aria-label') || '',
+              ariaSelected: el.getAttribute('aria-selected'),
+              ariaPressed: el.getAttribute('aria-pressed'),
+              text: text,
+              hasOnClick,
+              visible: el.offsetParent !== null,
+              rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+              depth
+            });
+          }
+          
+          container = container.parentElement;
+          depth++;
+        }
+      }
+      
+      // Также ищем ВСЕ элементы на странице содержащие "Image" или "Video"
+      const imageVideoElements = [];
+      const allElements = document.querySelectorAll('*');
+      for (const el of allElements) {
+        if (el.children.length > 5) continue; // пропускаем контейнеры
+        const text = el.textContent.trim();
+        if (text.length > 80) continue;
+        const lower = text.toLowerCase();
+        
+        if ((lower === 'image' || lower === 'video' || 
+             lower === 'imageimage' || lower === 'videocamvideo' ||
+             /^(image|video)\s*$/i.test(lower)) && el.offsetParent !== null) {
+          
+          const rect = el.getBoundingClientRect();
+          imageVideoElements.push({
+            tag: el.tagName,
+            role: el.getAttribute('role') || '',
+            text: text,
+            classes: el.className?.toString?.()?.substring(0, 80) || '',
+            parentTag: el.parentElement?.tagName || '',
+            parentRole: el.parentElement?.getAttribute('role') || '',
+            clickable: (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button' || 
+                       el.getAttribute('role') === 'tab' || el.getAttribute('tabindex') !== null),
+            rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) }
+          });
+        }
+      }
+      
+      respond({
+        toolbarCount: toolbarElements.length,
+        toolbar: toolbarElements.slice(0, 50), // ограничиваем
+        imageVideoCount: imageVideoElements.length,
+        imageVideo: imageVideoElements
+      });
+    } catch (err) {
+      respond({ error: err.message });
+    }
+  });
+
   // ─── Диагностика ──────────────────────────────────────
   window.addEventListener('flowbatch-diagnose-request', (e) => {
     const { requestId } = e.detail || {};
@@ -440,16 +726,13 @@
       const editor = element ? findSlateEditor(element) : null;
       const onPaste = element ? getReactPasteHandler(element) : null;
 
-      // Собираем информацию о tabs
       const tabs = document.querySelectorAll('[role="tab"]');
       const tabInfo = Array.from(tabs).map(t => ({
         text: t.textContent.trim().substring(0, 50),
         ariaSelected: t.getAttribute('aria-selected'),
         ariaLabel: t.getAttribute('aria-label') || '',
-        className: t.className.substring(0, 80),
         visible: t.offsetParent !== null,
         tagName: t.tagName,
-        rect: (() => { const r = t.getBoundingClientRect(); return { top: r.top, left: r.left, w: r.width, h: r.height }; })()
       }));
 
       const result = {
@@ -464,7 +747,7 @@
         editorMethods: editor ? Object.keys(editor).filter(k => typeof editor[k] === 'function').sort() : [],
         tabs: tabInfo,
         tabsCount: tabs.length,
-        reactVersion: window.React?.version || 'not exposed',
+        networkState: networkTracker.getState(),
       };
 
       window.dispatchEvent(new CustomEvent('flowbatch-diagnose-response', {
@@ -477,7 +760,7 @@
     }
   });
 
-  // Сигнал content script что page context загружен
-  window.dispatchEvent(new CustomEvent('flowbatch-page-ready', { detail: { version: '0.9' } }));
+  // Сигнал content script
+  window.dispatchEvent(new CustomEvent('flowbatch-page-ready', { detail: { version: '0.10' } }));
 
 })();

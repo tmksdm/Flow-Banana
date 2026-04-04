@@ -1,8 +1,5 @@
 /**
- * FlowBatch — Точка входа content script v0.9
- * 
- * ИЗМЕНЕНИЕ v0.9: injected.js теперь загружается через "world": "MAIN"
- * в manifest.json — ручная инъекция через blob/inline больше не нужна.
+ * FlowBatch — Точка входа content script v0.10
  */
 (() => {
   'use strict';
@@ -21,14 +18,16 @@
   });
 
   // Проверяем — может он уже загрузился раньше нас
-  // (world: MAIN скрипты могут выполниться в любом порядке)
+  if (window.__flowbatch_injected_v10) {
+    pageContextReady = true;
+    console.log('[FlowBatch] Page context script уже был загружен (v0.10)');
+  }
+
   FB.isPageContextReady = () => pageContextReady;
 
-  // Таймаут: если через 5с page context не подключился — предупреждаем
   setTimeout(() => {
     if (!pageContextReady) {
       console.warn('[FlowBatch] ⚠ Page context script НЕ загрузился за 5с!');
-      console.warn('[FlowBatch] Проверьте что injected.js указан в manifest.json с "world": "MAIN"');
       FB.notifyPanel({ type: 'LOG', text: 'ВНИМАНИЕ: page context script не загрузился', level: 'warning' });
     }
   }, 5000);
@@ -38,13 +37,24 @@
     const data = e.detail;
     if (data?.url) {
       FB.state.interceptedUrls.push(data);
-      console.log('[FlowBatch] Перехвачен URL:', data.url.substring(0, 100));
-      FB.notifyPanel({ type: 'LOG', text: `Перехвачен: ${data.type} ${data.url.substring(0, 80)}...`, level: 'info' });
+      console.log('[FlowBatch] Перехвачен URL:', data.type, data.method || '', data.status || '', data.url.substring(0, 100));
+      FB.notifyPanel({ type: 'LOG', text: `Перехвачен: ${data.type} ${data.method || ''} ${data.url.substring(0, 80)}`, level: 'info' });
     }
+  });
+
+  // ─── Слушаем события генерации ─────────────────────────
+  window.addEventListener('flowbatch-generation-started', (e) => {
+    console.log('[FlowBatch] 🚀 Генерация стартовала (сеть)');
+    FB.notifyPanel({ type: 'LOG', text: '🚀 Сетевой запрос генерации обнаружен', level: 'success' });
+  });
+
+  window.addEventListener('flowbatch-generation-response', (e) => {
+    console.log('[FlowBatch] ✅ Ответ генерации (сеть)');
+    FB.notifyPanel({ type: 'LOG', text: '✅ Ответ генерации получен', level: 'success' });
   });
 
   // ─── Авто-закрытие модалок при загрузке ────────────────
   setTimeout(() => FB.autoDismissModals(), 3000);
 
-  console.log('[FlowBatch] Content script v0.9 загружен:', window.location.href);
+  console.log('[FlowBatch] Content script v0.10 загружен:', window.location.href);
 })();
