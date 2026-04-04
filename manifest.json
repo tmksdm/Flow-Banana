@@ -12,7 +12,7 @@
     "debugger"
   ],
   "host_permissions": [
-    "https://labs.google/fx/*",
+    "https://labs.google/*",
     "https://aisandbox-pa.googleapis.com/*"
   ],
   "background": {
@@ -31,7 +31,7 @@
   "web_accessible_resources": [
     {
       "resources": ["interceptor.js", "api-bridge.js"],
-      "matches": ["https://labs.google/fx/*"]
+      "matches": ["<all_urls>"]
     }
   ],
   "action": {
