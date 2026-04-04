@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FlowBatch — Автоматизация Google Flow",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Пакетная генерация видео и изображений в Google Flow с авто-скачиванием в 4K",
 
   "permissions": [
@@ -38,6 +38,15 @@
       ],
       "run_at": "document_idle",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "https://labs.google/fx/tools/flow/*",
+        "https://flow.google/*"
+      ],
+      "js": ["injected.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ],
 
@@ -53,13 +62,6 @@
   "side_panel": {
     "default_path": "sidepanel/sidepanel.html"
   },
-
-  "web_accessible_resources": [
-    {
-      "resources": ["injected.js"],
-      "matches": ["https://labs.google/*", "https://flow.google/*"]
-    }
-  ],
 
   "icons": {
     "16": "icons/icon16.png",

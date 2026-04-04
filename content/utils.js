@@ -1,19 +1,12 @@
 /**
- * FlowBatch — Утилиты v0.8
+ * FlowBatch — Утилиты v0.9
  * 
- * КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ #2: Google Flow использует Slate.js editor.
- * 
- * Slate.js НЕ реагирует на execCommand('insertText') для обновления своей модели.
- * Текст появляется в DOM, но Slate model остаётся пустым → Flow не видит промпт.
- * 
- * Решение: Эмулировать PASTE event с DataTransfer.
- * Slate перехватывает paste и вызывает editor.insertData(clipboardData),
- * что корректно обновляет и DOM и внутреннюю модель.
- * 
- * Стратегия ввода (v0.8):
- *   0: ClipboardEvent paste — основная для Slate.js
- *   1: beforeinput + insertText из page context 
- *   2: execCommand('insertText') — fallback для не-Slate редакторов
+ * КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: injected.js теперь работает через world: MAIN.
+ * Стратегия ввода текста:
+ *   0 (ОСНОВНАЯ): Через page context → Slate API (editor.insertText)
+ *   1: Через page context → React onPaste handler
+ *   2: Через page context → нативный paste из page context
+ *   3 (fallback): execCommand insertText (без обновления Slate model)
  */
 (() => {
   'use strict';
@@ -37,58 +30,89 @@
     });
   };
 
-  /**
-   * Определяет, является ли элемент Slate.js editor
-   */
   function isSlateEditor(element) {
     if (!element) return false;
     if (element.hasAttribute('data-slate-editor') || element.hasAttribute('data-slate-node')) return true;
-    // Проверяем дочерние элементы на Slate-специфичные атрибуты
     if (element.querySelector('[data-slate-node], [data-slate-leaf], [data-slate-string]')) return true;
     return false;
   }
 
-  /**
-   * Получить "чистый" текст contenteditable, ИСКЛЮЧАЯ placeholder.
-   */
   function getCleanText(element) {
     if (!element) return '';
     if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
       return element.value || '';
     }
 
-    // Для Slate.js: placeholder отображается как span с data-slate-placeholder
     const clone = element.cloneNode(true);
     clone.querySelectorAll(
       '[data-slate-placeholder], [data-placeholder], [aria-hidden="true"], .placeholder, [class*="placeholder"]'
     ).forEach(el => el.remove());
-    
+
     let text = clone.textContent || '';
-    
-    // Дополнительная проверка на placeholder
+
     const placeholder = element.getAttribute('placeholder') ||
                         element.getAttribute('data-placeholder') ||
                         element.getAttribute('aria-placeholder') || '';
     if (placeholder && text.trim() === placeholder.trim()) return '';
     if (placeholder && text.startsWith(placeholder)) text = text.substring(placeholder.length);
-    
+
     return text.trim();
   }
   FB.getCleanText = getCleanText;
 
   /**
-   * Эмуляция ввода текста — v0.8 с поддержкой Slate.js
+   * Ожидание готовности page context (injected.js)
+   */
+  async function waitForPageContext(timeout = 8000) {
+    if (FB.isPageContextReady && FB.isPageContextReady()) return true;
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      if (FB.isPageContextReady && FB.isPageContextReady()) return true;
+      await FB.sleep(200);
+    }
+    console.warn('[FlowBatch] Page context не готов за', timeout, 'мс');
+    return false;
+  }
+
+  /**
+   * Отправить запрос в page context и получить ответ
+   */
+  function requestPageContext(eventName, detail, timeout = 10000) {
+    return new Promise((resolve) => {
+      const requestId = eventName + '_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+      const responseEvent = eventName.replace('-request', '-response');
+
+      const handler = (e) => {
+        if (e.detail?.requestId === requestId) {
+          window.removeEventListener(responseEvent, handler);
+          resolve(e.detail);
+        }
+      };
+      window.addEventListener(responseEvent, handler);
+
+      setTimeout(() => {
+        window.removeEventListener(responseEvent, handler);
+        resolve({ success: false, reason: 'timeout' });
+      }, timeout);
+
+      window.dispatchEvent(new CustomEvent(eventName, {
+        detail: { ...detail, requestId }
+      }));
+    });
+  }
+  FB.requestPageContext = requestPageContext;
+
+  /**
+   * Эмуляция ввода текста v0.9
    * 
-   * Порядок стратегий:
-   * 0. ClipboardEvent paste (для Slate.js)
-   * 1. beforeinput InputEvent из page context (для Slate.js)
-   * 2. execCommand insertText (для обычных contenteditable)
+   * Все стратегии кроме fallback идут через page context (injected.js),
+   * где есть доступ к React Fiber и Slate Editor API.
    */
   FB.setPromptText = async (element, text) => {
     if (!element) throw new Error('Элемент промпта не найден');
 
     const slate = isSlateEditor(element);
-    console.log('[FlowBatch] setPromptText v0.8: начинаем ввод текста...');
+    console.log('[FlowBatch] setPromptText v0.9: начинаем ввод текста...');
     console.log('[FlowBatch] setPromptText: Slate.js =', slate);
     console.log('[FlowBatch] setPromptText: целевой текст:', text.substring(0, 60));
 
@@ -108,135 +132,40 @@
       return true;
     }
 
-    // ═══ Стратегия 0 (ОСНОВНАЯ): ClipboardEvent paste ═══
-    // Slate.js перехватывает paste и вызывает ReactEditor.insertData(),
-    // что корректно обновляет Slate model.
-    console.log('[FlowBatch] setPromptText: Стратегия 0 — ClipboardEvent paste...');
-    try {
-      // 0a. Focus и клик
+    // ═══ Основной путь: через page context (Стратегии A/B/C) ═══
+    console.log('[FlowBatch] setPromptText: ожидаем page context...');
+    const pcReady = await waitForPageContext(8000);
+
+    if (pcReady) {
+      console.log('[FlowBatch] setPromptText: page context готов, отправляем запрос...');
+
+      // Фокус на элемент (нужен до любой стратегии)
       element.click();
-      await FB.sleep(150);
+      await FB.sleep(100);
       element.focus();
       await FB.sleep(200);
 
-      // 0b. Выделить всё существующее содержимое (для замены)
-      // Используем Ctrl+A через KeyboardEvent — Slate обрабатывает это через hotkeys
-      document.execCommand('selectAll', false, null);
-      await FB.sleep(300); // Ждём Slate selectionchange (throttle 100ms + debounce 0)
-
-      // 0c. Удалить выделенное (очистить поле)
-      // Для пустого поля (только placeholder) — это безопасная no-op
-      const currentClean = getCleanText(element);
-      if (currentClean.length > 0) {
-        document.execCommand('delete', false, null);
-        await FB.sleep(300);
-        console.log('[FlowBatch] setPromptText: старый текст удалён');
-      }
-
-      // 0d. Создаём DataTransfer с текстом
-      const dataTransfer = new DataTransfer();
-      dataTransfer.setData('text/plain', text);
-
-      // 0e. Диспатчим paste event
-      // Slate ловит paste через React's onPaste и вызывает editor.insertData(clipboardData)
-      const pasteEvent = new ClipboardEvent('paste', {
-        clipboardData: dataTransfer,
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-      });
-
-      const wasCancelled = !element.dispatchEvent(pasteEvent);
-      console.log('[FlowBatch] setPromptText: paste dispatched, defaultPrevented =', wasCancelled);
-
-      // Если Slate отменил paste (preventDefault) — он обработал его через insertData
-      // Если НЕ отменил — paste не был обработан Slate
-
-      await FB.sleep(500);
-
-      // 0f. Проверяем результат
-      const afterPaste = getCleanText(element);
-      console.log('[FlowBatch] setPromptText: после paste, cleanText =', afterPaste.substring(0, 60));
-
-      if (afterPaste.includes(text.substring(0, Math.min(20, text.length)))) {
-        console.log('[FlowBatch] setPromptText: Стратегия 0 (paste) — УСПЕХ ✓');
-        return true;
-      }
-
-      // Если paste не сработал (не отменён), Slate мог не его обработать
-      if (!wasCancelled) {
-        console.log('[FlowBatch] setPromptText: paste НЕ был перехвачен Slate, пробуем insertFromPaste...');
-        
-        // Попробуем через beforeinput с inputType='insertFromPaste'
-        const dt2 = new DataTransfer();
-        dt2.setData('text/plain', text);
-        
-        const beforeInputEvent = new InputEvent('beforeinput', {
-          inputType: 'insertFromPaste',
-          dataTransfer: dt2,
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-        });
-        element.dispatchEvent(beforeInputEvent);
-        
-        await FB.sleep(500);
-        const afterBI = getCleanText(element);
-        console.log('[FlowBatch] setPromptText: после beforeinput insertFromPaste, cleanText =', afterBI.substring(0, 60));
-        
-        if (afterBI.includes(text.substring(0, Math.min(20, text.length)))) {
-          console.log('[FlowBatch] setPromptText: Стратегия 0b (beforeinput paste) — УСПЕХ ✓');
-          return true;
-        }
-      }
-
-      console.log('[FlowBatch] setPromptText: Стратегия 0 не сработала, переходим к 1');
-    } catch (e) {
-      console.warn('[FlowBatch] setPromptText: Стратегия 0 ошибка:', e.message);
-    }
-
-    // ═══ Стратегия 1: beforeinput insertText из page context ═══
-    // Slate нативно слушает beforeinput на элементе.
-    // Диспатчим из page context через injected.js для лучшей совместимости.
-    console.log('[FlowBatch] setPromptText: Стратегия 1 — через page context (injected.js)...');
-    try {
-      const requestId = 'settext_' + Date.now();
-      
-      const responsePromise = new Promise((resolve) => {
-        const handler = (e) => {
-          if (e.detail?.requestId === requestId) {
-            window.removeEventListener('flowbatch-settext-response', handler);
-            resolve(e.detail);
-          }
-        };
-        window.addEventListener('flowbatch-settext-response', handler);
-        setTimeout(() => {
-          window.removeEventListener('flowbatch-settext-response', handler);
-          resolve({ success: false, reason: 'timeout' });
-        }, 5000);
-      });
-
-      window.dispatchEvent(new CustomEvent('flowbatch-settext-request', {
-        detail: { text, requestId }
-      }));
-
-      const result = await responsePromise;
-      console.log('[FlowBatch] setPromptText: Стратегия 1 результат:', JSON.stringify(result));
+      const result = await requestPageContext('flowbatch-settext-request', { text }, 15000);
+      console.log('[FlowBatch] setPromptText: результат page context:', JSON.stringify(result));
 
       if (result.success) {
+        console.log(`[FlowBatch] setPromptText: ✓ УСПЕХ через ${result.method}`);
+        
+        // Ждём React re-render
         await FB.sleep(500);
-        const afterPC = getCleanText(element);
-        if (afterPC.includes(text.substring(0, Math.min(20, text.length)))) {
-          console.log('[FlowBatch] setPromptText: Стратегия 1 (page context) — УСПЕХ ✓');
-          return true;
-        }
+        
+        const afterText = getCleanText(element);
+        console.log('[FlowBatch] setPromptText: после ввода cleanText =', afterText.substring(0, 60));
+        return true;
+      } else {
+        console.warn('[FlowBatch] setPromptText: page context не смог вставить текст:', result.reason);
       }
-    } catch (e) {
-      console.warn('[FlowBatch] setPromptText: Стратегия 1 ошибка:', e.message);
+    } else {
+      console.warn('[FlowBatch] setPromptText: page context не готов, используем fallback');
     }
 
-    // ═══ Стратегия 2: execCommand insertText (fallback) ═══
-    console.log('[FlowBatch] setPromptText: Стратегия 2 — execCommand insertText...');
+    // ═══ Fallback: execCommand (текст в DOM, но Slate model может не обновиться) ═══
+    console.log('[FlowBatch] setPromptText: Fallback — execCommand insertText...');
     try {
       element.focus();
       await FB.sleep(150);
@@ -248,7 +177,6 @@
 
       await FB.sleep(500);
 
-      // Дополнительно: fire input event для совместимости
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
 
@@ -256,11 +184,12 @@
       console.log('[FlowBatch] setPromptText: после execCommand, cleanText =', afterEC.substring(0, 60));
 
       if (afterEC.includes(text.substring(0, Math.min(20, text.length)))) {
-        console.log('[FlowBatch] setPromptText: Стратегия 2 (execCommand) — УСПЕХ ✓');
+        console.log('[FlowBatch] setPromptText: Fallback (execCommand) — текст в DOM ✓');
+        console.warn('[FlowBatch] setPromptText: ⚠ Slate model может быть не обновлена!');
         return true;
       }
     } catch (e) {
-      console.warn('[FlowBatch] setPromptText: Стратегия 2 ошибка:', e.message);
+      console.warn('[FlowBatch] setPromptText: Fallback ошибка:', e.message);
     }
 
     console.error('[FlowBatch] setPromptText: ❌ все стратегии исчерпаны');

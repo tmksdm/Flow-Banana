@@ -1,5 +1,6 @@
 /**
- * FlowBatch — Обработчик сообщений между content script и side panel / background
+ * FlowBatch — Обработчик сообщений v0.9
+ * Добавлена команда DIAGNOSE для полной диагностики из page context
  */
 (() => {
   'use strict';
@@ -9,7 +10,13 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
       case 'PING':
-        sendResponse({ status: 'alive', isRunning: FB.state.isRunning, isPaused: FB.state.isPaused, version: '0.4' });
+        sendResponse({
+          status: 'alive',
+          isRunning: FB.state.isRunning,
+          isPaused: FB.state.isPaused,
+          version: '0.9',
+          pageContextReady: FB.isPageContextReady ? FB.isPageContextReady() : false
+        });
         break;
 
       case 'SET_QUEUE':
@@ -63,7 +70,8 @@
           addMediaButton: !!FlowSelectors.getAddMediaButton(),
           loadingIndicator: !!FlowSelectors.getLoadingIndicator(),
           isGenerating: FlowSelectors.isGenerating(),
-          hasModal: FlowSelectors.hasModal()
+          hasModal: FlowSelectors.hasModal(),
+          pageContextReady: FB.isPageContextReady ? FB.isPageContextReady() : false
         });
         break;
 
@@ -83,6 +91,27 @@
         const discovery = FlowSelectors.discoverDOM();
         sendResponse({ ...basic, discovery });
         break;
+      }
+
+      case 'DIAGNOSE': {
+        // Запрос полной диагностики через page context
+        FB.requestPageContext('flowbatch-diagnose-request', {}, 10000)
+          .then(result => {
+            // Добавляем информацию из content script
+            result.pageContextReady = FB.isPageContextReady ? FB.isPageContextReady() : false;
+            result.contentScriptVersion = '0.9';
+            result.selectors = {
+              promptInput: !!FlowSelectors.getPromptInput(),
+              generateButton: !!FlowSelectors.getGenerateButton(),
+              formatButton: !!FlowSelectors.getFormatButton(),
+              currentFormat: FlowSelectors.getCurrentFormat(),
+            };
+            sendResponse(result);
+          })
+          .catch(err => {
+            sendResponse({ error: err.message, pageContextReady: false });
+          });
+        return true; // async response
       }
 
       case 'DISMISS_MODALS':

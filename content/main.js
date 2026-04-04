@@ -1,9 +1,8 @@
 /**
- * FlowBatch — Точка входа content script v0.7
+ * FlowBatch — Точка входа content script v0.9
  * 
- * ИСПРАВЛЕНИЕ: Инъекция injected.js через blob URL для обхода CSP.
- * CSP страницы labs.google блокирует script src от chrome-extension://,
- * но blob: URL может пройти (или используем inline script).
+ * ИЗМЕНЕНИЕ v0.9: injected.js теперь загружается через "world": "MAIN"
+ * в manifest.json — ручная инъекция через blob/inline больше не нужна.
  */
 (() => {
   'use strict';
@@ -13,45 +12,26 @@
 
   const FB = window.FB;
 
-  // ─── Инъекция fetch/XHR перехватчика ──────────────────
-  // Метод 1: fetch код файла и инъектировать как inline script через blob URL
-  async function injectPageScript() {
-    try {
-      const scriptUrl = chrome.runtime.getURL('injected.js');
-      const response = await fetch(scriptUrl);
-      const code = await response.text();
+  // ─── Ждём готовность page context скрипта ──────────────
+  let pageContextReady = false;
 
-      // Способ A: blob URL
-      const blob = new Blob([code], { type: 'application/javascript' });
-      const blobUrl = URL.createObjectURL(blob);
-      const script = document.createElement('script');
-      script.src = blobUrl;
-      script.onload = () => {
-        script.remove();
-        URL.revokeObjectURL(blobUrl);
-        console.log('[FlowBatch] Перехватчик fetch/XHR инъектирован (blob)');
-      };
-      script.onerror = () => {
-        // Способ B: если blob тоже заблокирован, попробуем textContent
-        script.remove();
-        URL.revokeObjectURL(blobUrl);
-        console.warn('[FlowBatch] blob-инъекция не сработала, пробуем inline...');
-        
-        const inlineScript = document.createElement('script');
-        inlineScript.textContent = code;
-        (document.head || document.documentElement).appendChild(inlineScript);
-        inlineScript.remove();
-        console.log('[FlowBatch] Перехватчик инъектирован (inline)');
-      };
-      (document.head || document.documentElement).appendChild(script);
-    } catch (e) {
-      console.error('[FlowBatch] Ошибка инъекции:', e);
-      // Способ C: Используем chrome.scripting из background
-      // (требует дополнительной настройки)
+  window.addEventListener('flowbatch-page-ready', (e) => {
+    pageContextReady = true;
+    console.log('[FlowBatch] Page context script подключён, версия:', e.detail?.version);
+  });
+
+  // Проверяем — может он уже загрузился раньше нас
+  // (world: MAIN скрипты могут выполниться в любом порядке)
+  FB.isPageContextReady = () => pageContextReady;
+
+  // Таймаут: если через 5с page context не подключился — предупреждаем
+  setTimeout(() => {
+    if (!pageContextReady) {
+      console.warn('[FlowBatch] ⚠ Page context script НЕ загрузился за 5с!');
+      console.warn('[FlowBatch] Проверьте что injected.js указан в manifest.json с "world": "MAIN"');
+      FB.notifyPanel({ type: 'LOG', text: 'ВНИМАНИЕ: page context script не загрузился', level: 'warning' });
     }
-  }
-
-  injectPageScript();
+  }, 5000);
 
   // ─── Слушаем перехваченные URL от injected.js ─────────
   window.addEventListener('flowbatch-intercepted', (e) => {
@@ -66,5 +46,5 @@
   // ─── Авто-закрытие модалок при загрузке ────────────────
   setTimeout(() => FB.autoDismissModals(), 3000);
 
-  console.log('[FlowBatch] Content script v0.7 загружен:', window.location.href);
+  console.log('[FlowBatch] Content script v0.9 загружен:', window.location.href);
 })();
