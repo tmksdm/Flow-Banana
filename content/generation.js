@@ -1,7 +1,9 @@
 /**
- * FlowBatch — Логика генерации v0.7
- * - setupFormat: расширенная диагностика (выводит текст каждой кнопки)
- * - setupFormat: ищет Image/Video по более широким паттернам (tab, span, div)
+ * FlowBatch — Логика генерации v0.8
+ * ИСПРАВЛЕНИЯ:
+ * - setupFormat: использует findTypeTab() вместо поиска по cleanText
+ * - setupFormat: убрана "Попытка 4" с поиском <I> элемента (Material icon)
+ * - waitForGenerationComplete: улучшено обнаружение (проверяем DOM изменения)
  */
 (() => {
   'use strict';
@@ -9,7 +11,8 @@
   if (!FB) return;
 
   /**
-   * Ожидание завершения генерации v0.6 (без изменений)
+   * Ожидание завершения генерации v0.8
+   * Улучшения: помимо isGenerating(), следим за появлением новых ассетов
    */
   FB.waitForGenerationComplete = (timeout = 300000) => {
     return new Promise((resolve, reject) => {
@@ -17,7 +20,12 @@
       let wasGenerating = false;
       let stableCount = 0;
       const STABLE = 3;
-      const START_GRACE_PERIOD = 20000;
+      const START_GRACE_PERIOD = 30000; // Увеличено с 20с до 30с
+
+      // Запоминаем начальное количество ассетов
+      const initialAssets = FlowSelectors.getGeneratedAssets();
+      const initialCount = initialAssets.images.length + initialAssets.videos.length;
+      let newAssetsDetected = false;
 
       const check = () => {
         const errorMsg = FlowSelectors.getPageError();
@@ -25,8 +33,16 @@
           return reject(new Error(`Ошибка Flow: "${errorMsg}"`));
         }
 
+        // Проверяем появление новых ассетов
+        const currentAssets = FlowSelectors.getGeneratedAssets();
+        const currentCount = currentAssets.images.length + currentAssets.videos.length;
+        if (currentCount > initialCount) {
+          newAssetsDetected = true;
+        }
+
         const generating = FlowSelectors.isGenerating();
         if (generating) { wasGenerating = true; stableCount = 0; }
+        
         if (wasGenerating && !generating) {
           stableCount++;
           if (stableCount >= STABLE) {
@@ -34,7 +50,14 @@
             return setTimeout(() => resolve(true), 2000);
           }
         }
-        if (!wasGenerating && (Date.now() - start > START_GRACE_PERIOD)) {
+
+        // Если новые ассеты появились и генерация не активна — считаем завершённой
+        if (newAssetsDetected && !generating && stableCount >= 1) {
+          console.log('[FlowBatch] waitForGeneration: новые ассеты обнаружены, генерация завершена');
+          return setTimeout(() => resolve(true), 2000);
+        }
+
+        if (!wasGenerating && !newAssetsDetected && (Date.now() - start > START_GRACE_PERIOD)) {
           return reject(new Error(
             `Генерация не началась за ${START_GRACE_PERIOD / 1000}с — проверьте промпт и формат`
           ));
@@ -50,7 +73,7 @@
   };
 
   /**
-   * Авто-закрытие модальных окон (без изменений)
+   * Авто-закрытие модальных окон
    */
   FB.autoDismissModals = async (maxAttempts = 3) => {
     let dismissed = 0;
@@ -68,7 +91,7 @@
   };
 
   /**
-   * Включение / выключение ULTRA-режима (без изменений)
+   * Включение / выключение ULTRA-режима
    */
   FB.setupUltra = async () => {
     const want = FB.state.settings.useUltra;
@@ -88,11 +111,10 @@
   };
 
   /**
-   * Переключение формата генерации v0.7
-   * Улучшения:
-   * - Логирует ТЕКСТ каждой видимой кнопки при ошибке
-   * - Ищет Image/Video по более широким селекторам (любой кликабельный элемент)
-   * - Ищет в том числе по aria-label и data-атрибутам
+   * Переключение формата генерации v0.8
+   * ИСПРАВЛЕНИЯ:
+   * - Использует findTypeTab() для поиска кнопки Image/Video
+   * - Не кликает на Material Icon элементы напрямую
    */
   FB.setupFormat = async () => {
     const targetMode = FB.state.settings.mode;
@@ -105,139 +127,78 @@
     const current = FlowSelectors.getCurrentFormat();
     if (current) {
       console.log(`[FlowBatch] setupFormat: текущий → ${current.type} ${current.aspect} x${current.count}`);
-      if (current.type === targetType && current.aspect === targetAspect) {
+      if (current.type.toLowerCase() === targetType.toLowerCase() && current.aspect === targetAspect) {
         console.log('[FlowBatch] setupFormat: формат уже верный, пропускаем');
         return true;
       }
     }
 
-    // Кликаем на комбо-кнопку формата
-    const formatBtn = FlowSelectors.getFormatButton();
-    if (!formatBtn) {
-      console.warn('[FlowBatch] setupFormat: комбо-кнопка формата не найдена');
-      FB.notifyPanel({ type: 'LOG', text: 'Кнопка формата не найдена', level: 'warning' });
-      return false;
-    }
-
-    console.log('[FlowBatch] setupFormat: кликаем на комбо-кнопку...');
-    await FB.clickElement(formatBtn);
-    await FB.sleep(1500); // Увеличена задержка для анимации открытия панели
-
-    // ── РАСШИРЕННАЯ ДИАГНОСТИКА: собираем ВСЕ видимые кликабельные элементы ──
-    const wideSelector = 'button, [role="button"], [role="tab"], [role="radio"], [role="menuitem"], [role="option"], [role="menuitemradio"], [role="listbox"] > *, [role="tablist"] > *';
-    const allClickable = FlowSelectors.deepQueryAll(wideSelector);
-    const visibleClickable = allClickable.filter(el => el.offsetParent !== null);
-
-    console.log(`[FlowBatch] setupFormat: всего кликабельных: ${allClickable.length}, видимых: ${visibleClickable.length}`);
-
-    // Логируем КАЖДУЮ видимую кнопку для диагностики
-    console.log('[FlowBatch] setupFormat: === ВИДИМЫЕ КЛИКАБЕЛЬНЫЕ ЭЛЕМЕНТЫ ===');
-    visibleClickable.forEach((el, i) => {
-      const raw = el.textContent.trim().substring(0, 60);
-      const tag = el.tagName.toLowerCase();
-      const role = el.getAttribute('role') || '';
-      const ariaLabel = el.getAttribute('aria-label') || '';
-      const ariaSelected = el.getAttribute('aria-selected') || '';
-      const classes = el.className ? (typeof el.className === 'string' ? el.className : '').substring(0, 50) : '';
-      console.log(`  [${i}] <${tag}> role="${role}" aria-label="${ariaLabel}" aria-selected="${ariaSelected}" class="${classes}" text="${raw}"`);
-    });
-    console.log('[FlowBatch] setupFormat: === КОНЕЦ СПИСКА ===');
-
-    // ── Ищем кнопку типа (Image/Video) ──
-    let typeButton = null;
-
-    // Попытка 1: точное совпадение текста
-    for (const el of visibleClickable) {
-      const cleanText = FlowSelectors.cleanButtonText(el).trim();
-      if (cleanText.toLowerCase() === targetType.toLowerCase()) {
-        typeButton = el;
-        console.log(`[FlowBatch] setupFormat: найдена по cleanText: "${cleanText}"`);
-        break;
-      }
-    }
-
-    // Попытка 2: текст содержит целевое слово (но не полная кнопка формата)
-    if (!typeButton) {
-      for (const el of visibleClickable) {
-        const text = el.textContent.trim();
-        // Пропускаем саму комбо-кнопку формата (она содержит "Video" или "Image" в составе)
-        if (text.match(/(Video|Image)\s*crop/i)) continue;
-        if (text.toLowerCase() === targetType.toLowerCase() ||
-            text.toLowerCase().startsWith(targetType.toLowerCase() + ' ') ||
-            text.toLowerCase().endsWith(' ' + targetType.toLowerCase())) {
-          typeButton = el;
-          console.log(`[FlowBatch] setupFormat: найдена по textContent: "${text}"`);
-          break;
+    // ── Переключение типа (Image/Video) через tab-кнопку ──
+    // Сначала проверяем, нужно ли переключать тип
+    const needTypeSwitch = !current || current.type.toLowerCase() !== targetType.toLowerCase();
+    
+    if (needTypeSwitch) {
+      console.log(`[FlowBatch] setupFormat: нужно переключить тип на "${targetType}"`);
+      
+      // Используем findTypeTab — специализированный поиск для Flow tabs
+      const typeTab = FlowSelectors.findTypeTab(targetType);
+      
+      if (typeTab) {
+        console.log(`[FlowBatch] setupFormat: кликаем tab "${typeTab.textContent.trim().substring(0, 30)}"...`);
+        await FB.clickElement(typeTab);
+        await FB.sleep(1000);
+        
+        // Проверяем что переключение сработало
+        const afterSwitch = FlowSelectors.getCurrentFormat();
+        if (afterSwitch) {
+          console.log(`[FlowBatch] setupFormat: после переключения → ${afterSwitch.type} ${afterSwitch.aspect}`);
+        }
+      } else {
+        console.warn(`[FlowBatch] setupFormat: tab "${targetType}" НЕ найден!`);
+        FB.notifyPanel({ type: 'LOG', text: `Tab "${targetType}" не найден`, level: 'warning' });
+        
+        // Fallback: кликаем на комбо-кнопку формата и ищем в панели
+        const formatBtn = FlowSelectors.getFormatButton();
+        if (formatBtn) {
+          console.log('[FlowBatch] setupFormat: пробуем через комбо-кнопку...');
+          await FB.clickElement(formatBtn);
+          await FB.sleep(1500);
+          
+          // Ищем tab в открытой панели
+          const typeTabInPanel = FlowSelectors.findTypeTab(targetType);
+          if (typeTabInPanel) {
+            await FB.clickElement(typeTabInPanel);
+            await FB.sleep(800);
+          }
         }
       }
     }
 
-    // Попытка 3: aria-label
-    if (!typeButton) {
-      for (const el of visibleClickable) {
-        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-        if (ariaLabel === targetType.toLowerCase() || ariaLabel.includes(targetType.toLowerCase())) {
-          typeButton = el;
-          console.log(`[FlowBatch] setupFormat: найдена по aria-label: "${ariaLabel}"`);
-          break;
-        }
-      }
-    }
-
-    // Попытка 4: ищем среди ВСЕХ элементов (не только кликабельных)
-    if (!typeButton) {
-      const allElements = FlowSelectors.deepQueryAll('*');
-      const visible = allElements.filter(el => el.offsetParent !== null && el.textContent.trim().length < 20);
-      for (const el of visible) {
-        const text = el.textContent.trim();
-        if (text.toLowerCase() === targetType.toLowerCase() && el.children.length === 0) {
-          // Нашли текстовый элемент — кликаем на него или на его родителя
-          typeButton = el;
-          console.log(`[FlowBatch] setupFormat: найдена как текстовый элемент <${el.tagName}>: "${text}"`);
-          break;
-        }
-      }
-    }
-
-    if (typeButton) {
-      console.log(`[FlowBatch] setupFormat: кликаем кнопку типа "${typeButton.textContent.trim().substring(0, 30)}"...`);
-      await FB.clickElement(typeButton);
-      await FB.sleep(800);
+    // ── Ищем aspect ratio (если нужно менять) ──
+    const currentAfterType = FlowSelectors.getCurrentFormat();
+    if (currentAfterType && currentAfterType.aspect === targetAspect) {
+      console.log('[FlowBatch] setupFormat: aspect ratio уже верный');
     } else {
-      console.warn(`[FlowBatch] setupFormat: кнопка "${targetType}" НЕ НАЙДЕНА`);
-      FB.notifyPanel({ type: 'LOG', text: `Кнопка "${targetType}" не найдена — см. лог`, level: 'warning' });
-    }
+      // Открываем панель формата если ещё не открыта
+      const formatBtn = FlowSelectors.getFormatButton();
+      if (formatBtn) {
+        await FB.clickElement(formatBtn);
+        await FB.sleep(1500);
+      }
 
-    // ── Ищем aspect ratio ──
-    const aspectButton = FlowSelectors.findAspectRatioOption(targetAspect);
-    if (aspectButton) {
-      console.log(`[FlowBatch] setupFormat: найден aspect ratio ${targetAspect}, кликаем...`);
-      await FB.clickElement(aspectButton);
+      const aspectButton = FlowSelectors.findAspectRatioOption(targetAspect);
+      if (aspectButton) {
+        console.log(`[FlowBatch] setupFormat: найден aspect ratio ${targetAspect}, кликаем...`);
+        await FB.clickElement(aspectButton);
+        await FB.sleep(500);
+      } else {
+        console.warn(`[FlowBatch] setupFormat: aspect ratio ${targetAspect} не найден`);
+      }
+
+      // Закрываем панель
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
       await FB.sleep(500);
-    } else {
-      console.warn(`[FlowBatch] setupFormat: aspect ratio ${targetAspect} не найден`);
     }
-
-    // ── Ищем count ──
-    const countClickable = FlowSelectors.deepQueryAll('button, [role="button"], [role="tab"], [role="radio"], [role="menuitemradio"]');
-    let countButton = null;
-    for (const el of countClickable) {
-      const text = el.textContent.trim();
-      if ((text === `x${targetCount}` || text === `${targetCount}` || text === `×${targetCount}`) &&
-          el.offsetParent !== null) {
-        countButton = el;
-        break;
-      }
-    }
-    if (countButton) {
-      console.log(`[FlowBatch] setupFormat: найден count x${targetCount}, кликаем...`);
-      await FB.clickElement(countButton);
-      await FB.sleep(300);
-    }
-
-    // Закрываем панель
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
-    await FB.sleep(500);
 
     // Проверяем результат
     const newFormat = FlowSelectors.getCurrentFormat();

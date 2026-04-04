@@ -1,9 +1,9 @@
 /**
- * FlowBatch — Управление очередью промптов v0.6
- * - Добавлен вызов setupFormat перед первым промптом
- * - Улучшена проверка текста (используется FB.getCleanText)
- * - Увеличены задержки для стабильности
- * - Ожидание разблокировки Create с ранним выходом при ошибке
+ * FlowBatch — Управление очередью промптов v0.8
+ * Изменения:
+ * - Увеличена задержка после ввода текста (2000мс для Slate model sync)
+ * - Улучшена проверка текста после ввода
+ * - Логирование DOM для отладки при ошибке ввода
  */
 (() => {
   'use strict';
@@ -31,14 +31,9 @@
     });
   }
 
-  /**
-   * Ожидание готовности кнопки Create (не disabled, не aria-disabled)
-   * С проверкой ошибок на странице для раннего выхода.
-   */
   async function waitForCreateReady(maxWait = 15000) {
     const start = Date.now();
     while (Date.now() - start < maxWait) {
-      // Проверяем ошибки
       const err = FlowSelectors.getPageError();
       if (err) throw new Error(`Ошибка Flow: "${err}"`);
 
@@ -66,11 +61,10 @@
         console.log('[FlowBatch] [queue] Шаг 1: autoDismissModals...');
         await FB.autoDismissModals();
 
-        // 2) Проверка ошибок на странице (от предыдущей попытки)
+        // 2) Проверка ошибок
         const prevError = FlowSelectors.getPageError();
         if (prevError) {
-          console.log('[FlowBatch] [queue] Обнаружена ошибка от предыдущей попытки:', prevError);
-          // Ждём, пока исчезнет (Flow обычно показывает snackbar ~5с)
+          console.log('[FlowBatch] [queue] Ошибка от предыдущей попытки:', prevError);
           await FB.sleep(5000);
         }
 
@@ -79,21 +73,26 @@
         const input = await FB.waitForElement(() => FlowSelectors.getPromptInput(), 15000);
         console.log('[FlowBatch] [queue] Шаг 2: поле найдено:', input.tagName, input.getAttribute('role'));
 
-        // 4) Ввести текст (v0.6 — улучшенные стратегии)
+        // 4) Ввести текст (v0.8 — Slate.js paste strategy)
         console.log('[FlowBatch] [queue] Шаг 3: вводим текст...');
         const inputResult = await FB.setPromptText(input, prompt);
-        await FB.sleep(1500); // ← увеличен с 800 до 1500 для Angular change detection
-
-        // 5) Проверяем текст (используем getCleanText)
-        const actualText = FB.getCleanText(input);
-        console.log(`[FlowBatch] [queue] Шаг 3b: чистый текст в поле = "${actualText.substring(0, 60)}"`);
         
-        if (actualText.trim().length === 0) {
-          console.warn('[FlowBatch] [queue] ВНИМАНИЕ: чистый текст пуст! Raw textContent:', (input.textContent || '').substring(0, 80));
-          FB.notifyPanel({ type: 'LOG', text: 'ВНИМАНИЕ: текст не распознан Flow', level: 'warning' });
+        // Увеличена задержка для Slate model sync + React re-render
+        await FB.sleep(2000);
+
+        // 5) Проверяем текст
+        const actualText = FB.getCleanText(input);
+        const rawText = (input.textContent || '').trim();
+        console.log(`[FlowBatch] [queue] Шаг 3b: cleanText = "${actualText.substring(0, 60)}"`);
+        console.log(`[FlowBatch] [queue] Шаг 3b: rawText = "${rawText.substring(0, 60)}"`);
+        
+        if (!actualText && !rawText.includes(prompt.substring(0, 15))) {
+          console.warn('[FlowBatch] [queue] ВНИМАНИЕ: текст НЕ введён!');
+          FB.notifyPanel({ type: 'LOG', text: 'ВНИМАНИЕ: текст не введён — Slate не принял ввод', level: 'warning' });
+          // Не прерываем — всё равно попробуем Create, вдруг Slate model обновлён
         }
 
-        // 6) Ждём готовность кнопки Create (с проверкой ошибок)
+        // 6) Ждём готовность кнопки Create
         console.log('[FlowBatch] [queue] Шаг 4: ждём готовность Create...');
         const createBtn = await waitForCreateReady(10000);
         console.log('[FlowBatch] [queue] Шаг 4: кнопка Create готова');
@@ -104,7 +103,7 @@
         console.log('[FlowBatch] [queue] Шаг 5: клик выполнен');
         FB.notifyPanel({ type: 'LOG', text: 'Нажата кнопка Create', level: 'info' });
 
-        // 8) Короткая пауза и проверка ошибки сразу после клика
+        // 8) Проверка ошибки после клика
         await FB.sleep(3000);
         const postClickError = FlowSelectors.getPageError();
         if (postClickError) {
@@ -146,7 +145,7 @@
 
     await FB.autoDismissModals();
     
-    // ФОРМАТ (НОВОЕ v0.6)
+    // ФОРМАТ
     console.log('[FlowBatch] [queue] Настройка формата...');
     await FB.setupFormat();
     await FB.sleep(500);
