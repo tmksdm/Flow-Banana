@@ -1,5 +1,5 @@
 /**
- * FlowBatch — Точка входа content script v0.11
+ * FlowBatch — Точка входа content script v0.12
  */
 (() => {
   'use strict';
@@ -13,9 +13,9 @@
     console.log('[FlowBatch] Page context подключён, v' + e.detail?.version);
   });
 
-  if (window.__flowbatch_injected_v11) {
+  if (window.__flowbatch_injected_v12) {
     pageContextReady = true;
-    console.log('[FlowBatch] Page context уже загружен (v0.11)');
+    console.log('[FlowBatch] Page context уже загружен (v0.12)');
   }
 
   FB.isPageContextReady = () => pageContextReady;
@@ -38,5 +38,5 @@
 
   setTimeout(() => FB.autoDismissModals(), 3000);
 
-  console.log('[FlowBatch] Content script v0.11 загружен:', window.location.href);
+  console.log('[FlowBatch] Content script v0.12 загружен:', window.location.href);
 })();

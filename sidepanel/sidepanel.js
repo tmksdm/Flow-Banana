@@ -1,12 +1,11 @@
 /**
- * FlowBatch — Side Panel Script v0.3
- * Управление UI расширения, связь с content script.
+ * FlowBatch — Side Panel Script v0.12
+ * Добавлена кнопка "Сканировать ассеты" для отладки скачивания.
  */
 
 (() => {
   'use strict';
 
-  // ─── DOM-элементы ─────────────────────────────────────
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -29,18 +28,16 @@
     queueList: $('#queue-list'),
     btnSaveSettings: $('#btn-save-settings'),
     btnDiagnose: $('#btn-diagnose'),
+    btnDiscoverAssets: $('#btn-discover-assets'),
     diagnoseOutput: $('#diagnose-output'),
     logList: $('#log-list'),
     logCounter: $('#log-counter'),
     btnClearLog: $('#btn-clear-log'),
   };
 
-  // ─── Состояние ────────────────────────────────────────
   let activeTabId = null;
   let isConnected = false;
   let logCount = 0;
-
-  // ─── Утилиты ──────────────────────────────────────────
 
   function log(text, level = 'info') {
     const entry = document.createElement('div');
@@ -81,8 +78,6 @@
       .filter(p => p.length > 0);
   }
 
-  // ─── Подключение к content script ─────────────────────
-
   async function checkConnection() {
     try {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -121,8 +116,6 @@
     el.statusText.textContent = text;
     el.btnStart.disabled = !connected;
   }
-
-  // ─── UI обновления ────────────────────────────────────
 
   function renderQueueList(prompts, results = []) {
     el.queueList.innerHTML = '';
@@ -178,8 +171,7 @@
     el.connectionStatus.className = `status-dot ${isConnected ? 'connected' : 'disconnected'}`;
   }
 
-  // ─── Табы ──────────────────────────────────────────────
-
+  // Табы
 
   $$('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -191,8 +183,6 @@
       $(`#tab-${tab.dataset.tab}`).classList.add('active');
     });
   });
-
-  // ─── Обработчики ──────────────────────────────────────
 
   // Загрузка .txt
   el.btnUpload.addEventListener('click', () => el.fileInput.click());
@@ -280,7 +270,7 @@
     log('Настройки сохранены', 'success');
   });
 
-  // ─── ДИАГНОСТИКА DOM (Discovery Mode) ─────────────────
+  // ─── ДИАГНОСТИКА DOM ─────────────────────────────────
   el.btnDiagnose.addEventListener('click', async () => {
     el.diagnoseOutput.classList.remove('hidden');
     el.diagnoseOutput.textContent = 'Сканирование DOM...\n';
@@ -288,9 +278,8 @@
     try {
       const result = await sendToContent({ type: 'DISCOVER_DOM' });
 
-      let output = '═══ ДИАГНОСТИКА DOM v0.3 ═══\n\n';
+      let output = '═══ ДИАГНОСТИКА DOM v0.12 ═══\n\n';
 
-      // Базовые селекторы
       output += '── Основные элементы ──\n';
       output += `Поле промпта:     ${result.promptInput ? '✅ Найдено' : '❌ Не найдено'}\n`;
       output += `Кнопка Create:    ${result.generateButton ? '✅ Найдено' : '❌ Не найдено'}\n`;
@@ -303,77 +292,84 @@
       }
       output += '\n';
       output += `Add Media:        ${result.addMediaButton ? '✅ Найдено' : '❌ Не найдено'}\n`;
-      output += `Индикатор загрузки: ${result.loadingIndicator ? '✅' : '⚪ Нет'}\n`;
       output += `Генерация идёт:   ${result.isGenerating ? '🔄 Да' : '⚪ Нет'}\n`;
       output += `Модальное окно:   ${result.hasModal ? '⚠️ Есть' : '⚪ Нет'}\n\n`;
 
-      // Найденные интерактивные элементы
       if (result.discovery) {
         const d = result.discovery;
-
         output += '── Обнаруженные элементы ──\n';
         output += `contenteditable:  ${d.contentEditables || 0} шт.\n`;
         output += `textarea:         ${d.textareas || 0} шт.\n`;
         output += `button:           ${d.buttons || 0} шт.\n`;
         output += `[role="tab"]:     ${d.tabs || 0} шт.\n`;
-        output += `[role="radio"]:   ${d.radios || 0} шт.\n`;
-        output += `[role="textbox"]: ${d.textboxes || 0} шт.\n`;
-        output += `Shadow Roots:     ${d.shadowRoots || 0} шт.\n\n`;
+        output += `[role="textbox"]: ${d.textboxes || 0} шт.\n\n`;
 
-        // Детали кнопок — raw + clean
         if (d.buttonTexts && d.buttonTexts.length > 0) {
           output += '── Кнопки (raw → clean) ──\n';
           d.buttonTexts.forEach((btn, i) => {
             output += `  ${i + 1}. "${btn.raw}"`;
-            if (btn.clean && btn.clean !== btn.raw) {
-              output += ` → "${btn.clean}"`;
-            }
-            if (btn.ariaLabel) {
-              output += ` [aria-label="${btn.ariaLabel}"]`;
-            }
+            if (btn.clean && btn.clean !== btn.raw) output += ` → "${btn.clean}"`;
+            if (btn.ariaLabel) output += ` [aria-label="${btn.ariaLabel}"]`;
             output += '\n';
-          });
-          output += '\n';
-        }
-
-        // Comбо формата
-        if (d.formatButton) {
-          output += '── Комбо-кнопка формата ──\n';
-          output += `  Текст: "${d.formatButton}"\n`;
-          if (d.currentFormat) {
-            output += `  Тип: ${d.currentFormat.type}\n`;
-            output += `  Aspect: ${d.currentFormat.aspect}\n`;
-            output += `  Count: x${d.currentFormat.count}\n`;
-          }
-          output += '\n';
-        }
-
-        // Contenteditable детали
-        if (d.contentEditableDetails && d.contentEditableDetails.length > 0) {
-          output += '── ContentEditable элементы ──\n';
-          d.contentEditableDetails.forEach((item, i) => {
-            output += `  ${i + 1}. tag=${item.tag} role="${item.role}" aria-label="${item.ariaLabel}" placeholder="${item.placeholder}"\n`;
-          });
-          output += '\n';
-        }
-
-        // Textarea детали
-        if (d.textareaDetails && d.textareaDetails.length > 0) {
-          output += '── Textarea элементы ──\n';
-          d.textareaDetails.forEach((item, i) => {
-            output += `  ${i + 1}. aria-label="${item.ariaLabel}" placeholder="${item.placeholder}" name="${item.name}"\n`;
           });
           output += '\n';
         }
       }
 
       el.diagnoseOutput.textContent = output;
-      log('Диагностика DOM v0.3 выполнена', 'success');
+      log('Диагностика DOM v0.12 выполнена', 'success');
     } catch (error) {
-      el.diagnoseOutput.textContent = `ОШИБКА: ${error.message}\n\nУбедитесь, что:\n1. Открыта страница Google Flow\n2. Страница полностью загружена\n3. Попробуйте обновить страницу (F5)`;
+      el.diagnoseOutput.textContent = `ОШИБКА: ${error.message}\n\nОбновите страницу Flow (F5)`;
       log(`Ошибка диагностики: ${error.message}`, 'error');
     }
   });
+
+  // ─── ДИАГНОСТИКА АССЕТОВ ──────────────────────────────
+  if (el.btnDiscoverAssets) {
+    el.btnDiscoverAssets.addEventListener('click', async () => {
+      el.diagnoseOutput.classList.remove('hidden');
+      el.diagnoseOutput.textContent = 'Сканирование ассетов...\n';
+
+      try {
+        const result = await sendToContent({ type: 'DISCOVER_ASSETS' });
+
+        let output = '═══ АССЕТЫ НА СТРАНИЦЕ v0.12 ═══\n\n';
+        output += `Всего img: ${result.totalImages || 0}\n`;
+        output += `Overlay/Dialog: ${result.hasOverlay ? 'Да' : 'Нет'}\n\n`;
+
+        if (result.assets && result.assets.length > 0) {
+          output += '── Изображения ──\n';
+          result.assets.forEach((a, i) => {
+            output += `\n${i + 1}. ${a.width}x${a.height} — ${a.src}\n`;
+            output += `   parent: <${a.parentTag}> role="${a.parentRole}"\n`;
+            if (a.nearbyButtons && a.nearbyButtons.length > 0) {
+              output += '   кнопки рядом:\n';
+              a.nearbyButtons.forEach(b => {
+                output += `     • "${b.text}" [${b.ariaLabel}] depth=${b.depth}\n`;
+              });
+            } else {
+              output += '   кнопки рядом: НЕТ\n';
+            }
+          });
+        }
+
+        if (result.downloadButtons && result.downloadButtons.length > 0) {
+          output += '\n── Кнопки Download на странице ──\n';
+          result.downloadButtons.forEach((b, i) => {
+            output += `  ${i + 1}. "${b.text}" [${b.ariaLabel}] visible=${b.visible} <${b.tag}> role="${b.role}"\n`;
+          });
+        } else {
+          output += '\n── Кнопки Download: НЕ НАЙДЕНЫ ──\n';
+        }
+
+        el.diagnoseOutput.textContent = output;
+        log('Сканирование ассетов выполнено', 'success');
+      } catch (error) {
+        el.diagnoseOutput.textContent = `ОШИБКА: ${error.message}\n\nОбновите страницу Flow (F5)`;
+        log(`Ошибка сканирования ассетов: ${error.message}`, 'error');
+      }
+    });
+  }
 
   // Очистка лога
   el.btnClearLog.addEventListener('click', () => {
@@ -382,8 +378,7 @@
     el.logCounter.textContent = '0 записей';
   });
 
-  // ─── Настройки ─────────────────────────────────────────
-
+  // Настройки
   function getSettingsFromUI() {
     return {
       mode: el.modeSelect.value,
@@ -418,7 +413,7 @@
     }
   }
 
-  // ─── Сообщения от content script ──────────────────────
+  // Сообщения от content script
   chrome.runtime.onMessage.addListener((message, sender) => {
     if (message.source !== 'content') return;
 
@@ -459,12 +454,9 @@
     }
   });
 
-  // ─── Инициализация ─────────────────────────────────────
+  // Инициализация
   loadSettings();
   checkConnection();
-
-  // Проверяем подключение каждые 3 секунды
   setInterval(checkConnection, 3000);
-
-  log('Side Panel v0.3 загружен', 'info');
+  log('Side Panel v0.12 загружен', 'info');
 })();

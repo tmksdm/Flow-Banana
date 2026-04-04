@@ -1,6 +1,6 @@
 /**
- * FlowBatch — Обработчик сообщений v0.9
- * Добавлена команда DIAGNOSE для полной диагностики из page context
+ * FlowBatch — Обработчик сообщений v0.12
+ * Добавлена команда DISCOVER_ASSETS для исследования DOM ассетов
  */
 (() => {
   'use strict';
@@ -14,7 +14,7 @@
           status: 'alive',
           isRunning: FB.state.isRunning,
           isPaused: FB.state.isPaused,
-          version: '0.9',
+          version: '0.12',
           pageContextReady: FB.isPageContextReady ? FB.isPageContextReady() : false
         });
         break;
@@ -93,13 +93,18 @@
         break;
       }
 
+      case 'DISCOVER_ASSETS': {
+        FB.discoverAssets()
+          .then(result => sendResponse(result))
+          .catch(err => sendResponse({ error: err.message }));
+        return true;
+      }
+
       case 'DIAGNOSE': {
-        // Запрос полной диагностики через page context
         FB.requestPageContext('flowbatch-diagnose-request', {}, 10000)
           .then(result => {
-            // Добавляем информацию из content script
             result.pageContextReady = FB.isPageContextReady ? FB.isPageContextReady() : false;
-            result.contentScriptVersion = '0.9';
+            result.contentScriptVersion = '0.12';
             result.selectors = {
               promptInput: !!FlowSelectors.getPromptInput(),
               generateButton: !!FlowSelectors.getGenerateButton(),
@@ -111,7 +116,7 @@
           .catch(err => {
             sendResponse({ error: err.message, pageContextReady: false });
           });
-        return true; // async response
+        return true;
       }
 
       case 'DISMISS_MODALS':

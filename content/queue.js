@@ -1,5 +1,7 @@
 /**
- * FlowBatch — Очередь v0.11
+ * FlowBatch — Очередь v0.12
+ * 
+ * Фикс: запоминаем srcs ассетов ДО генерации для точного определения новых
  */
 (() => {
   'use strict';
@@ -69,6 +71,10 @@
         // 5. Ждём кнопку Create
         const createBtn = await waitForCreateReady(10000);
 
+        // ★ v0.12: Запоминаем текущие ассеты ПЕРЕД кликом Create
+        const assetSrcsBeforeGeneration = FB.snapshotAssetSrcs();
+        console.log(`[FlowBatch] Ассетов до генерации: ${assetSrcsBeforeGeneration.length}`);
+
         // 6. Кликаем Create (React + нативный)
         console.log('[FlowBatch] Кликаем Create...');
         let createResult = null;
@@ -98,10 +104,10 @@
         console.log(`[FlowBatch] ✅ Генерация завершена: "${short}..."`);
         FB.notifyPanel({ type: 'LOG', text: `✅ Генерация: "${short}..."`, level: 'success' });
 
-        // 9. Скачивание
+        // 9. Скачивание — передаём snapshot для точного определения новых ассетов
         if (settings.autoDownload) {
-          await FB.sleep(2000);
-          await FB.triggerDownload(settings.downloadResolution);
+          await FB.sleep(3000); // Даём время отрендериться
+          await FB.triggerDownload(settings.downloadResolution, assetSrcsBeforeGeneration);
         }
 
         return { success: true, prompt };

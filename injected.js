@@ -1,16 +1,17 @@
 /**
- * FlowBatch — Page Context Script v0.11
+ * FlowBatch — Page Context Script v0.12
  * 
- * Фиксы v0.11:
- * - _isGenerationRequest: добавлены flowmedia, aisandbox
- * - click-create: ищет arrow_forward+Create (не add_2+Create)
+ * Фиксы v0.12:
+ * - _isGenerationRequest: ТОЛЬКО batchGenerate/flowMedia:batch — НЕ credits, batchLog, recommendations
+ * - Добавлен обработчик flowbatch-download-request для скачивания через fetch в page context
+ * - Добавлен обработчик flowbatch-discover-assets-request для исследования DOM ассетов
  */
 (() => {
   'use strict';
 
-  if (window.__flowbatch_injected_v11) return;
-  window.__flowbatch_injected_v11 = true;
-  console.log('[FlowBatch/page] Page context script v0.11 загружен');
+  if (window.__flowbatch_injected_v12) return;
+  window.__flowbatch_injected_v12 = true;
+  console.log('[FlowBatch/page] Page context script v0.12 загружен');
 
   let cachedSlateEditor = null;
   let cachedEditorElement = null;
@@ -22,6 +23,7 @@
     lastResponseTime: 0,
     recentRequests: [],
     generationSignalDetected: false,
+    lastGenerationResponseUrl: null,
 
     onRequestStart(url, method) {
       this.pendingRequests++;
@@ -45,6 +47,7 @@
       if (entry) entry.status = status;
 
       if (this._isGenerationRequest(url, 'POST')) {
+        this.lastGenerationResponseUrl = url;
         console.log('[FlowBatch/page] ✅ Ответ генерации:', status, url.substring(0, 120));
         window.dispatchEvent(new CustomEvent('flowbatch-generation-response', {
           detail: { url, status, timestamp: Date.now() }
@@ -52,28 +55,43 @@
       }
     },
 
-    _isGenerationRequest(url) {
+    /**
+     * УЖЕСТОЧЁННЫЙ фильтр v0.12:
+     * Только реальные запросы генерации, НЕ логирование/credits/recommendations
+     */
+    _isGenerationRequest(url, method) {
       const u = url.toLowerCase();
+      // Исключаем шум
+      if (u.includes('/credits')) return false;
+      if (u.includes('batchlog')) return false;
+      if (u.includes('batchlogfrontendevents')) return false;
+      if (u.includes('fetchuserrecommendations')) return false;
+      if (u.includes('fetchuseracknowledgement')) return false;
+      if (u.includes('/auth/')) return false;
+      if (u.includes('recaptcha')) return false;
+      // Только настоящие запросы генерации
       return (
-        u.includes('flowmedia') ||
-        u.includes('aisandbox') ||
-        u.includes('generate') ||
-        u.includes('prediction') ||
+        u.includes('batchgenerate') ||          // batchGenerateImages, batchGenerateVideos
+        u.includes('flowmedia:batch') ||         // flowMedia:batch*
+        u.includes('/generate') ||               // другие generate endpoints
+        u.includes('/prediction') ||
         u.includes('generativelanguage') ||
         u.includes('aiplatform') ||
-        u.includes('imagen') ||
-        u.includes('veo')
+        u.includes('/imagen') ||
+        u.includes('/veo')
       );
     },
 
     resetGenerationSignal() {
       this.generationSignalDetected = false;
+      this.lastGenerationResponseUrl = null;
     },
 
     getState() {
       return {
         pending: this.pendingRequests,
         generationDetected: this.generationSignalDetected,
+        lastGenerationUrl: this.lastGenerationResponseUrl,
         recent: this.recentRequests.slice(-10).map(r => ({
           url: r.url.substring(0, 80),
           method: r.method,
@@ -149,7 +167,6 @@
         return true;
       }
     }
-    // Fallback: fiber tree
     const fiberKey = findReactFiberKey(element);
     if (fiberKey) {
       let fiber = element[fiberKey];
@@ -194,7 +211,6 @@
     let fiber = domElement[fiberKey];
     let maxDepth = 50;
     while (fiber && maxDepth-- > 0) {
-      // hooks
       if (fiber.memoizedState) {
         let hs = fiber.memoizedState;
         let hd = 30;
@@ -206,7 +222,6 @@
           hs = hs.next;
         }
       }
-      // props
       const props = fiber.memoizedProps || fiber.pendingProps;
       if (props) {
         for (const key of Object.keys(props)) {
@@ -312,7 +327,6 @@
       let element = null;
 
       if (selector === 'CREATE_BUTTON') {
-        // Ищем ИМЕННО кнопку генерации: arrow_forward + Create
         const allBtns = document.querySelectorAll('button, [role="button"]');
         for (const btn of allBtns) {
           if (btn.offsetParent === null || btn.disabled) continue;
@@ -322,7 +336,6 @@
             break;
           }
         }
-        // Fallback: Create без add_2
         if (!element) {
           for (const btn of allBtns) {
             if (btn.offsetParent === null || btn.disabled) continue;
@@ -343,15 +356,146 @@
       if (!element) return respond({ success: false, reason: 'element_not_found' });
 
       const reactClicked = clickViaReact(element);
-
-      // Подстраховка — нативный клик через 100мс
       setTimeout(() => element.click(), 100);
 
-      // Ждём 2с и проверяем сеть
       setTimeout(() => {
         respond({ success: true, method: reactClicked ? 'react-props' : 'native-click', networkState: networkTracker.getState() });
       }, 2000);
 
+    } catch (err) {
+      respond({ success: false, reason: err.message });
+    }
+  });
+
+  // ─── Обработчик discover-assets: исследование DOM ассетов ───
+  window.addEventListener('flowbatch-discover-assets-request', (e) => {
+    const { requestId } = e.detail || {};
+    const respond = (data) => {
+      window.dispatchEvent(new CustomEvent('flowbatch-discover-assets-response', { detail: { requestId, ...data } }));
+    };
+
+    try {
+      // Найти все img на странице, которые могут быть результатами генерации
+      const allImages = document.querySelectorAll('img');
+      const assetInfo = [];
+
+      for (const img of allImages) {
+        const src = img.src || '';
+        if (!src) continue;
+        if (img.naturalWidth > 0 && img.naturalWidth < 100) continue;
+        if (img.width > 0 && img.width < 100) continue;
+
+        // Поднимаемся по DOM и ищем кнопки рядом
+        const nearbyButtons = [];
+        let container = img.parentElement;
+        let depth = 0;
+        while (container && depth < 6) {
+          const btns = container.querySelectorAll('button, [role="button"]');
+          for (const btn of btns) {
+            if (btn.offsetParent === null) continue;
+            nearbyButtons.push({
+              text: btn.textContent.trim().substring(0, 60),
+              ariaLabel: btn.getAttribute('aria-label') || '',
+              role: btn.getAttribute('role') || '',
+              depth
+            });
+          }
+          if (nearbyButtons.length > 0 && depth > 2) break;
+          container = container.parentElement;
+          depth++;
+        }
+
+        assetInfo.push({
+          src: src.substring(0, 100),
+          width: img.naturalWidth || img.width,
+          height: img.naturalHeight || img.height,
+          alt: (img.alt || '').substring(0, 50),
+          parentTag: img.parentElement?.tagName,
+          parentRole: img.parentElement?.getAttribute('role') || '',
+          nearbyButtons: nearbyButtons.slice(0, 10)
+        });
+      }
+
+      // Также ищем кнопки download на странице
+      const downloadButtons = [];
+      const allBtns = document.querySelectorAll('button, [role="button"], [role="menuitem"]');
+      for (const btn of allBtns) {
+        const text = btn.textContent.trim().toLowerCase();
+        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+        if (text.includes('download') || text.includes('скачать') ||
+            ariaLabel.includes('download') || ariaLabel.includes('скачать') ||
+            text === 'save' || ariaLabel.includes('save')) {
+          downloadButtons.push({
+            text: btn.textContent.trim().substring(0, 60),
+            ariaLabel: btn.getAttribute('aria-label') || '',
+            visible: btn.offsetParent !== null,
+            tag: btn.tagName,
+            role: btn.getAttribute('role') || ''
+          });
+        }
+      }
+
+      respond({
+        totalImages: allImages.length,
+        assets: assetInfo.slice(0, 15),
+        downloadButtons,
+        hasOverlay: !!document.querySelector('[role="dialog"], [aria-modal="true"]')
+      });
+    } catch (err) {
+      respond({ error: err.message });
+    }
+  });
+
+  // ─── Обработчик download: скачивание через fetch с авторизацией ───
+  window.addEventListener('flowbatch-download-request', (e) => {
+    const { url, requestId } = e.detail || {};
+    if (!url || !requestId) return;
+
+    const respond = (data) => {
+      window.dispatchEvent(new CustomEvent('flowbatch-download-response', { detail: { requestId, ...data } }));
+    };
+
+    (async () => {
+      try {
+        console.log('[FlowBatch/page] Скачивание через fetch:', url.substring(0, 80));
+        const response = await originalFetch(url, { credentials: 'include' });
+        if (!response.ok) {
+          return respond({ success: false, reason: `HTTP ${response.status}` });
+        }
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const contentType = response.headers.get('content-type') || blob.type || '';
+        respond({
+          success: true,
+          blobUrl,
+          contentType,
+          size: blob.size
+        });
+      } catch (err) {
+        respond({ success: false, reason: err.message });
+      }
+    })();
+  });
+
+  // ─── Обработчик click-element: клик по произвольному элементу ───
+  window.addEventListener('flowbatch-click-element-request', (e) => {
+    const { selector, index, requestId } = e.detail || {};
+    if (!requestId) return;
+
+    const respond = (data) => {
+      window.dispatchEvent(new CustomEvent('flowbatch-click-element-response', { detail: { requestId, ...data } }));
+    };
+
+    try {
+      let element = null;
+      if (selector) {
+        const elements = document.querySelectorAll(selector);
+        element = elements[index || 0] || elements[0];
+      }
+      if (!element) return respond({ success: false, reason: 'element_not_found' });
+
+      clickViaReact(element);
+      respond({ success: true });
     } catch (err) {
       respond({ success: false, reason: err.message });
     }
@@ -420,5 +564,5 @@
     }
   });
 
-  window.dispatchEvent(new CustomEvent('flowbatch-page-ready', { detail: { version: '0.11' } }));
+  window.dispatchEvent(new CustomEvent('flowbatch-page-ready', { detail: { version: '0.12' } }));
 })();

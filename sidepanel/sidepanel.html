@@ -14,7 +14,7 @@
       <div class="header-brand">
         <span class="logo">⚡</span>
         <h1>FlowBatch</h1>
-        <span class="version">v0.3</span>
+        <span class="version">v0.12</span>
       </div>
       <div class="header-right">
         <div id="connection-status" class="status-dot disconnected" title="Не подключено"></div>
@@ -36,7 +36,6 @@
     <!-- ════════════════ Таб: Очередь ════════════════ -->
     <section id="tab-queue" class="tab-content active">
 
-      <!-- Режим генерации -->
       <div class="form-group">
         <label>Режим</label>
         <select id="mode-select">
@@ -46,20 +45,17 @@
         </select>
       </div>
 
-      <!-- Ввод промптов -->
       <div class="form-group">
         <label>Промпты <small>(разделяй пустой строкой)</small></label>
         <textarea id="prompts-input" rows="10" placeholder="A serene sunset over a calm ocean with gentle waves.&#10;&#10;A bustling city street at night with neon lights.&#10;&#10;A robot painting a masterpiece in a sunlit studio."></textarea>
       </div>
 
-      <!-- Загрузка из файла -->
       <div class="form-group row">
         <button id="btn-upload" class="btn btn-secondary">📁 Загрузить .txt</button>
         <input type="file" id="file-input" accept=".txt" hidden>
         <span id="file-info" class="file-info"></span>
       </div>
 
-      <!-- Прогресс -->
       <div id="progress-section" class="progress-section hidden">
         <div class="progress-bar-container">
           <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
@@ -70,7 +66,6 @@
         </div>
       </div>
 
-      <!-- Кнопки управления -->
       <div class="controls">
         <button id="btn-start" class="btn btn-primary btn-large">▶ Запустить</button>
         <button id="btn-pause" class="btn btn-warning hidden">⏸ Пауза</button>
@@ -78,7 +73,6 @@
         <button id="btn-stop" class="btn btn-danger hidden">⏹ Стоп</button>
       </div>
 
-      <!-- Список промптов в очереди -->
       <div id="queue-list" class="queue-list"></div>
     </section>
 
@@ -168,6 +162,8 @@
       <div class="settings-group">
         <h3 class="settings-title">Диагностика</h3>
         <button id="btn-diagnose" class="btn btn-secondary btn-full">🔍 Сканировать DOM страницы</button>
+        <div style="height: 6px;"></div>
+        <button id="btn-discover-assets" class="btn btn-secondary btn-full">🖼 Сканировать ассеты (для отладки скачивания)</button>
         <div id="diagnose-output" class="diagnose-output hidden"></div>
       </div>
     </section>
@@ -179,7 +175,7 @@
         <button id="btn-clear-log" class="btn btn-secondary btn-sm">🗑 Очистить</button>
       </div>
       <div id="log-list" class="log-list">
-        <div class="log-entry info">FlowBatch v0.3 загружен</div>
+        <div class="log-entry info">FlowBatch v0.12 загружен</div>
       </div>
     </section>
 
