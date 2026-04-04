@@ -62,7 +62,7 @@
     }
 
     .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-    .row label { min-width: 80px; color: var(--text-dim); font-size: 11px; }
+    .row label { min-width: 90px; color: var(--text-dim); font-size: 11px; }
 
     button {
       cursor: pointer;
@@ -80,6 +80,7 @@
     .btn-danger { background: var(--error); color: #fff; }
     .btn-success { background: var(--success); color: #000; }
     .btn-secondary { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); }
+    .btn-small { padding: 4px 10px; font-size: 11px; }
 
     .actions { display: flex; gap: 8px; margin-top: 8px; }
     .actions button { flex: 1; }
@@ -89,7 +90,7 @@
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 8px;
-      max-height: 200px;
+      max-height: 250px;
       overflow-y: auto;
       font-size: 11px;
       font-family: monospace;
@@ -108,6 +109,7 @@
     .status-ready { background: rgba(88,166,255,0.1); color: var(--accent); }
     .status-running { background: rgba(63,185,80,0.1); color: var(--success); }
     .status-error { background: rgba(248,81,73,0.1); color: var(--error); }
+    .status-upscaling { background: rgba(210,153,34,0.15); color: var(--warning); }
 
     .queue-item {
       display: flex;
@@ -130,14 +132,34 @@
       width: 8px; height: 8px; border-radius: 50%;
       flex-shrink: 0;
     }
+    .queue-item .detail {
+      font-size: 10px;
+      color: var(--text-dim);
+    }
     .dot-pending { background: var(--text-dim); }
-    .dot-running { background: var(--accent); }
+    .dot-running { background: var(--accent); animation: pulse 1s infinite; }
+    .dot-upscaling { background: var(--warning); animation: pulse 1.2s infinite; }
+    .dot-downloading { background: var(--success); animation: pulse 0.8s infinite; }
     .dot-done { background: var(--success); }
     .dot-failed { background: var(--error); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .info-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 4px 0;
+      font-size: 11px; color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-val { color: var(--text); font-weight: 500; }
   </style>
 </head>
 <body>
-  <h2>🍌 Flow Banana Automator</h2>
+  <h2>🍌 Flow Banana v3</h2>
 
   <div id="status" class="status-ready">Ready</div>
 
@@ -147,9 +169,8 @@
     <div class="row">
       <label>Type:</label>
       <select id="modeSelect">
-        <option value="text-to-image">Create Image</option>
+        <option value="text-to-image">Text → Image</option>
         <option value="text-to-video">Text → Video</option>
-        <option value="image-to-video">Image → Video</option>
       </select>
     </div>
   </div>
@@ -179,14 +200,15 @@
     <div class="row">
       <label>Download:</label>
       <select id="downloadRes">
-        <option value="1k">1K Original</option>
-        <option value="2k">2K Upscaled</option>
-        <option value="4k" selected>4K Upscaled</option>
+        <option value="none">Don't download</option>
+        <option value="1k">1K (original)</option>
+        <option value="2k">2K (upscale)</option>
+        <option value="4k" selected>4K (upscale)</option>
       </select>
     </div>
     <div class="row">
-      <label>Wait (s):</label>
-      <input type="number" id="waitTime" value="15" min="5" max="120" style="width:60px;">
+      <label>Delay (s):</label>
+      <input type="number" id="delayBetween" value="3" min="1" max="60" style="width:60px;" title="Delay between prompts">
     </div>
   </div>
 
@@ -201,6 +223,10 @@
     <div class="actions">
       <button id="btnStart" class="btn-primary">▶ Start Queue</button>
       <button id="btnStop" class="btn-danger" disabled>■ Stop</button>
+    </div>
+    <div class="actions" style="margin-top:6px;">
+      <button id="btnTestBridge" class="btn-secondary btn-small">Test API Bridge</button>
+      <button id="btnClearLog" class="btn-secondary btn-small">Clear Log</button>
     </div>
   </div>
 
