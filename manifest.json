@@ -1,68 +1,41 @@
 {
   "manifest_version": 3,
-  "name": "FlowBatch — Автоматизация Google Flow",
-  "version": "0.10.0",
-  "description": "Пакетная генерация видео и изображений в Google Flow с авто-скачиванием в 4K",
-
+  "name": "Flow Banana Automator",
+  "version": "2.0.0",
+  "description": "Batch generation automation for Nano Banana Pro (Google Flow)",
   "permissions": [
     "activeTab",
+    "scripting",
     "storage",
     "downloads",
-    "sidePanel"
+    "sidePanel",
+    "debugger"
   ],
-
   "host_permissions": [
-    "https://labs.google/*",
-    "https://flow.google/*"
+    "https://labs.google/fx/*"
   ],
-
   "background": {
     "service_worker": "background.js"
   },
-
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
   "content_scripts": [
     {
-      "matches": [
-        "https://labs.google/fx/tools/flow/*",
-        "https://flow.google/*"
-      ],
-      "js": [
-        "lib/selectors.js",
-        "content/state.js",
-        "content/utils.js",
-        "content/generation.js",
-        "content/download.js",
-        "content/queue.js",
-        "content/messages.js",
-        "content/main.js"
-      ],
-      "run_at": "document_idle",
-      "all_frames": false
-    },
-    {
-      "matches": [
-        "https://labs.google/fx/tools/flow/*",
-        "https://flow.google/*"
-      ],
-      "js": ["injected.js"],
-      "run_at": "document_idle",
-      "world": "MAIN"
+      "matches": ["https://labs.google/fx/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
     }
   ],
-
+  "web_accessible_resources": [
+    {
+      "resources": ["interceptor.js"],
+      "matches": ["https://labs.google/fx/*"]
+    }
+  ],
   "action": {
-    "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
-    },
-    "default_title": "FlowBatch — открыть панель"
+    "default_title": "Flow Banana Automator"
   },
-
-  "side_panel": {
-    "default_path": "sidepanel/sidepanel.html"
-  },
-
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
